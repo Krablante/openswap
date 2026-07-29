@@ -1,0 +1,35 @@
+[telegram]
+token = "123456:replace-me"
+allowed_users = [123456789]
+
+[storage]
+# Relative paths are resolved from this file.
+directory = "./data"
+
+[opencode]
+# Linux example. On Windows, use a TOML literal string such as
+# auth_file = 'C:\path\to\opencode\auth.json'
+auth_file = "/home/user/.local/share/opencode/auth.json"
+
+[codex]
+# A command in PATH or an absolute path to the Codex executable.
+binary = "codex"
+
+[service]
+scheduler_interval_seconds = 60
+
+# Uncomment the sections below only for multihost routing.
+# [sync]
+# interval_seconds = 120
+# connect_timeout_seconds = 5
+# command_timeout_seconds = 15
+#
+# [[hosts]]
+# name = "local"
+# auth_file = "/home/user/.local/share/opencode/auth.json"
+#
+# [[hosts]]
+# name = "server"
+# auth_file = "/home/user/.local/share/opencode/auth.json"
+# ssh = "user@server.example"
+# python = "python3"
