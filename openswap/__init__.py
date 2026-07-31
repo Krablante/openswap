@@ -1,3 +1,3 @@
 """OpenSwap: lightweight ChatGPT session manager for OpenCode-compatible auth."""
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

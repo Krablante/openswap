@@ -142,6 +142,7 @@ The bot supports:
 - confirmed removal of unused Sessions;
 - confirmed earned reset redemption;
 - usage refresh for one or every Session;
+- combined and per-Session token statistics for 7 days, 30 days, and lifetime;
 - English and Russian interfaces;
 - System health and synchronization retry.
 
@@ -157,6 +158,12 @@ Usage, reset windows, and earned reset credits refresh automatically for every
 healthy Session on the configured scheduler cadence. No manual Refresh is
 required. A transient error on one Session leaves its previous snapshot visible
 with a stale marker while other Sessions and Telegram menus continue updating.
+
+Account-wide token history refreshes independently every 30 minutes through the
+official Codex App Server. The Tokens screen shows total and per-Session 7-day,
+30-day, and lifetime values plus explicit coverage. Manual Refresh forces both
+allowance and token refresh. Token collection is sequential and does not hold
+the registry lock while Codex runs.
 
 ## Multihost configuration
 
@@ -251,6 +258,13 @@ assignment remain intact.
 Open System to identify whether one or several healthy Sessions missed their
 last usage refresh. The previous snapshot remains visible. Refresh is retried on
 the next scheduled tick; other Sessions continue updating independently.
+
+### Token statistics are missing or stale
+
+Open Tokens and press Refresh. A Session requiring login cannot refresh its
+account history and remains outside coverage until reauthorized. A transient
+Codex error keeps the previous token cache visible with a stale marker and is
+retried after the independent 30-minute cache window.
 
 ### A host remains offline
 

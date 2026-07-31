@@ -22,6 +22,8 @@ from .core import (
     OpenSwapError,
     account_name,
     parse_time,
+    token_usage_overview,
+    token_usage_stats,
 )
 
 
@@ -124,6 +126,10 @@ def _system_issue_label(language: str, issue: str) -> str:
             "Usage data is stale for one or more Sessions",
             "Данные лимитов одной или нескольких сессий устарели",
         ),
+        "token_usage_stale": (
+            "Token statistics are stale for one or more Sessions",
+            "Статистика токенов одной или нескольких сессий устарела",
+        ),
         "sync_incomplete": (
             "Some hosts are not synchronized",
             "Не все хосты синхронизированы",
@@ -199,6 +205,79 @@ def _reset_short(timestamp: Any, language: str) -> str:
     return _pick(language, f"{minutes}m", f"{minutes}м")
 
 
+def _format_tokens(value: int) -> str:
+    if value < 1_000:
+        return str(value)
+    if value < 1_000_000:
+        return f"{value / 1_000:.1f}K"
+    if value < 1_000_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    return f"{value / 1_000_000_000:.2f}B"
+
+
+def _token_age(moment: dt.datetime | None, language: str) -> str:
+    if moment is None:
+        return _pick(language, "never", "никогда")
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.UTC)
+    minutes = max(
+        0,
+        int((dt.datetime.now(dt.UTC) - moment).total_seconds() // 60),
+    )
+    if minutes < 1:
+        return _pick(language, "just now", "только что")
+    if minutes < 60:
+        return _pick(language, f"{minutes}m ago", f"{minutes} мин. назад")
+    hours = minutes // 60
+    if hours < 24:
+        return _pick(language, f"{hours}h ago", f"{hours} ч. назад")
+    days = hours // 24
+    return _pick(language, f"{days}d ago", f"{days} дн. назад")
+
+
+def _token_usage_block(account: dict[str, Any], language: str) -> list[str]:
+    stats = token_usage_stats(account)
+    if not stats["available"]:
+        return [
+            _pick(
+                language,
+                "   🧮 Tokens: <i>not collected yet</i>",
+                "   🧮 Токены: <i>ещё не собраны</i>",
+            )
+        ]
+    stale = (
+        _pick(language, " · stale", " · устарело")
+        if stats["stale"]
+        else ""
+    )
+    lines = [
+        _pick(language, "   🧮 Tokens", "   🧮 Токены")
+        + _pick(language, ": 7d ", ": 7 д. ")
+        + f"<b>{_format_tokens(stats['seven_days'])}</b> · "
+        + _pick(language, "30d ", "30 д. ")
+        + f"<b>{_format_tokens(stats['thirty_days'])}</b>{stale}",
+        _pick(language, "      Lifetime", "      За всё время")
+        + f": <b>{_format_tokens(stats['lifetime'])}</b>",
+    ]
+    if stats["days_active"] is not None:
+        lines[-1] += _pick(
+            language,
+            f" · {stats['days_active']} active days",
+            f" · активных дней: {stats['days_active']}",
+        )
+    if stats["peak_tokens"] is not None and stats["peak_day"]:
+        lines.append(
+            _pick(language, "      Peak", "      Пик")
+            + f": <b>{_format_tokens(stats['peak_tokens'])}</b> · "
+            + html.escape(stats["peak_day"])
+        )
+    lines.append(
+        _pick(language, "      Updated ", "      Обновлено ")
+        + f"<i>{_token_age(stats['checked_at'], language)}</i>"
+    )
+    return lines
+
+
 def _root_label(account: dict[str, Any], *, active: bool, language: str) -> str:
     marker = "●" if active else "○"
     name = account_name(account)[:20]
@@ -256,6 +335,7 @@ def _account_block(account: dict[str, Any], *, active: bool, language: str) -> s
                 "   🔑 Требуется повторный вход",
             )
         )
+        lines.extend(_token_usage_block(account, language))
         return "\n".join(lines)
 
     buckets = _limit_buckets(account)
@@ -305,6 +385,7 @@ def _account_block(account: dict[str, Any], *, active: bool, language: str) -> s
                 "   🕒 <i>обновление лимитов задерживается</i>",
             )
         )
+    lines.extend(_token_usage_block(account, language))
     return "\n".join(lines)
 
 
@@ -655,6 +736,37 @@ class TelegramBot:
                     message_id=message_id,
                     view_account="__system__",
                 )
+            elif data == "tokens":
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    view_account="__tokens__",
+                )
+            elif data == "tokens-refresh":
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    notice=_pick(
+                        language,
+                        "Refreshing token statistics…",
+                        "Обновляю статистику токенов…",
+                    ),
+                    view_account="__tokens__",
+                )
+                self.openswap.refresh_all_token_usage(force=True)
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    notice=_pick(
+                        language,
+                        "Token statistics refreshed",
+                        "Статистика токенов обновлена",
+                    ),
+                    view_account="__tokens__",
+                )
             elif data == "retry-sync":
                 self.openswap.request_sync()
                 self._show_menu(
@@ -808,6 +920,7 @@ class TelegramBot:
                     view_account=None,
                 )
                 checked = self.openswap.refresh_all_usage()
+                self.openswap.refresh_all_token_usage(force=True)
                 notice = (
                     _pick(language, f"Updated: {len(checked)}", f"Обновлено: {len(checked)}")
                     if checked
@@ -856,6 +969,9 @@ class TelegramBot:
                     view_account=account_id,
                 )
                 account = self.openswap.refresh(account_id)
+                account = self.openswap.refresh_token_usage(
+                    account_id, force=True
+                )
                 self._show_menu(
                     chat_id,
                     user_id,
@@ -1272,6 +1388,11 @@ class TelegramBot:
             lines = [f"🗣 <b>OpenSwap</b> · {_pick(language, 'language', 'язык')}"]
         elif view_account == "__system__":
             lines = [f"⚙ <b>OpenSwap</b> · {_pick(language, 'system', 'система')}"]
+        elif view_account == "__tokens__":
+            lines = [
+                "📊 <b>OpenSwap</b> · "
+                + _pick(language, "token usage", "статистика токенов")
+            ]
         elif view_account in {"__hosts__", "__hosts_reset__"}:
             lines = [f"🌐 <b>OpenSwap</b> · {_pick(language, 'hosts', 'хосты')}"]
         elif host_target is not None:
@@ -1334,6 +1455,13 @@ class TelegramBot:
                     f"{_status_icon(sessions['usage_fresh'] == sessions['healthy'])} "
                     + _pick(language, "📊 Usage freshness", "📊 Свежесть лимитов")
                     + f" · {sessions['usage_fresh']}/{sessions['healthy']}",
+                    f"{_status_icon(sessions['token_usage_fresh'] == sessions['healthy'])} "
+                    + _pick(
+                        language,
+                        "🧮 Token statistics",
+                        "🧮 Статистика токенов",
+                    )
+                    + f" · {sessions['token_usage_fresh']}/{sessions['healthy']}",
                 ]
             )
             if system_sync["enabled"]:
@@ -1364,6 +1492,67 @@ class TelegramBot:
                     ]
                 )
             lines.append("")
+        elif view_account == "__tokens__":
+            overview = token_usage_overview(accounts)
+            lines.extend(
+                [
+                    f"<b>{_pick(language, 'All sessions', 'Все сессии')}</b>",
+                    _pick(language, "7 days", "7 дней")
+                    + f": <b>{_format_tokens(overview['seven_days'])}</b>",
+                    _pick(language, "30 days", "30 дней")
+                    + f": <b>{_format_tokens(overview['thirty_days'])}</b>",
+                    _pick(language, "Lifetime", "За всё время")
+                    + f": <b>{_format_tokens(overview['lifetime'])}</b>",
+                    "",
+                    f"<b>{_pick(language, 'By session · 7d / 30d / lifetime', 'По сессиям · 7 д. / 30 д. / всё время')}</b>",
+                ]
+            )
+            for row in overview["rows"]:
+                account = row["account"]
+                stats = row["stats"]
+                label = html.escape(account_name(account))
+                if not stats["available"]:
+                    reason = (
+                        _pick(language, " · login required", " · нужен вход")
+                        if account.get("last_error") == "login required"
+                        else ""
+                    )
+                    lines.append(
+                        f"• {label} · <i>"
+                        + _pick(language, "no data", "нет данных")
+                        + reason
+                        + "</i>"
+                    )
+                    continue
+                stale = " ⚠" if stats["stale"] else ""
+                lines.append(
+                    f"• {label} · {_format_tokens(stats['seven_days'])} / "
+                    f"{_format_tokens(stats['thirty_days'])} / "
+                    f"{_format_tokens(stats['lifetime'])}{stale}"
+                )
+            lines.extend(
+                [
+                    "",
+                    _pick(language, "Data coverage", "Охват данных")
+                    + f": <b>{overview['available']}/{overview['total']}</b>",
+                ]
+            )
+            if overview["oldest_checked_at"] is not None:
+                lines.append(
+                    _pick(language, "Oldest data", "Самые старые данные")
+                    + f": <i>{_token_age(overview['oldest_checked_at'], language)}</i>"
+                )
+            lines.extend(
+                [
+                    "",
+                    _pick(
+                        language,
+                        "Account-wide Codex totals; they are not billing costs.",
+                        "Общие данные Codex по аккаунтам; это не денежные расходы.",
+                    ),
+                    "",
+                ]
+            )
         elif view_account == "__hosts__":
             if sync.get("default_session"):
                 lines.append(
@@ -1554,6 +1743,39 @@ class TelegramBot:
                                 f"{_host_count_label(int(account.get('target_count') or 0), language)}"
                                 for account in assignments
                             )
+            overview = token_usage_overview(accounts)
+            if overview["available"]:
+                coverage = (
+                    _pick(language, " · coverage ", " · охват ")
+                    + f"{overview['available']}/{overview['total']}"
+                    if overview["available"] != overview["total"]
+                    else ""
+                )
+                lines.extend(
+                    [
+                        "",
+                        "📊 "
+                        + _pick(language, "Tokens", "Токены")
+                        + _pick(language, " · 7d ", " · 7 д. ")
+                        + f"<b>{_format_tokens(overview['seven_days'])}</b>"
+                        + _pick(language, " · 30d ", " · 30 д. ")
+                        + f"<b>{_format_tokens(overview['thirty_days'])}</b>"
+                        + coverage,
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        "",
+                        "📊 "
+                        + _pick(
+                            language,
+                            "Tokens · collecting statistics",
+                            "Токены · статистика собирается",
+                        ),
+                    ]
+                )
+            lines.append("")
             lines.extend([_pick(language, "Choose a session for details and actions.", "Выберите сессию для подробностей и действий."), ""])
         else:
             lines.extend([_pick(language, "No sessions yet", "Аккаунтов пока нет"), ""])
@@ -1602,6 +1824,21 @@ class TelegramBot:
                 )
             return [
                 actions,
+                [
+                    {
+                        "text": _pick(language, "← All sessions", "← Все сессии"),
+                        "callback_data": "back",
+                    }
+                ],
+            ]
+        if view_account == "__tokens__":
+            return [
+                [
+                    {
+                        "text": _pick(language, "↻ Refresh", "↻ Обновить"),
+                        "callback_data": "tokens-refresh",
+                    }
+                ],
                 [
                     {
                         "text": _pick(language, "← All sessions", "← Все сессии"),
@@ -1806,6 +2043,15 @@ class TelegramBot:
                 {"text": _pick(language, "↻ Refresh", "↻ Обновить"), "callback_data": "refresh-root"},
             ]
         )
+        if accounts:
+            keyboard.append(
+                [
+                    {
+                        "text": _pick(language, "📊 Tokens", "📊 Токены"),
+                        "callback_data": "tokens",
+                    }
+                ]
+            )
         system_button = {
             "text": _pick(language, "⚙ System", "⚙ Система"),
             "callback_data": "system",

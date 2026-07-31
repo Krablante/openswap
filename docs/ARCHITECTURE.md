@@ -47,9 +47,10 @@ sync.lock
 ```
 
 `registry.json` uses schema 2. It stores Session aliases, safe identity
-metadata, usage snapshots, fingerprints, timestamps, Telegram menu state, one
-default Session UUID, and sparse host overrides. It never stores raw access or
-refresh tokens.
+metadata, allowance snapshots, daily token aggregates, fingerprints,
+timestamps, Telegram menu state, one default Session UUID, and sparse host
+overrides. It never stores raw access or refresh tokens, prompts, completions,
+or per-request traces.
 
 Each account slot contains the canonical credential document for one ChatGPT
 account. The live OpenCode `auth.json` and remote target files are published
@@ -95,10 +96,12 @@ Telegram is the only management interface. One editable message represents the
 current view. `/start` replaces an old menu; `/language` opens the language
 selector and removes its command message.
 
-The root contains Session rows, `Add`, `Refresh`, and the bottom navigation:
+The root contains Session rows, a compact combined token summary, `Add`,
+`Refresh`, and the bottom navigation:
 
-- multihost: `System` is left and `Hosts` is right on one row;
-- single-host: `System` occupies the full row.
+- `Tokens` occupies a separate full-width row when Sessions exist;
+- multihost: `System` is left and `Hosts` is right on the final row;
+- single-host: `System` occupies the full final row.
 
 Session buttons contain only Session identity, usage/reset countdown, stale
 state, and earned reset credits. Routing counts belong to a separate
@@ -106,6 +109,12 @@ state, and earned reset credits. Routing counts belong to a separate
 host count exceed one. Dead assigned Sessions remain visible there. A one-
 Session or one-host deployment suppresses the block rather than repeating an
 obvious assignment.
+
+The Tokens view computes 7-day, 30-day, and lifetime totals from cached daily
+buckets. It shows the aggregate first and one compact comparison row per
+Session. Coverage is always visible; missing Sessions are never silently
+treated as zero. Session details add active-day and peak-day context. Counts are
+account-wide Codex usage, not monetary spend or host attribution.
 
 The System view is computed only when opened or refreshed. It checks the
 configured OpenCode document, Codex version, registry and account slots,
@@ -129,8 +138,9 @@ Codex authorization can wait for human input.
 Each scheduler pass performs:
 
 1. due OAuth and usage refresh for every healthy Session;
-2. target reconciliation when due or explicitly woken;
-3. in-place Telegram menu updates.
+2. due account-wide token history refresh;
+3. target reconciliation when due or explicitly woken;
+4. in-place Telegram menu updates.
 
 Usage runs before SSH on scheduled ticks, so several offline hosts cannot delay
 the allowance/reset snapshot by the sum of their connection timeouts. An event
@@ -153,6 +163,19 @@ refresh per tick. Token refresh and usage refresh share the same account pass,
 so token rotation never skips limits and never causes a duplicate limits call.
 Per-Session refresh failures are retained as safe metadata and surfaced as
 stale usage in Telegram System and Session views.
+
+Token history has an independent fixed 30-minute cache window and a two-hour
+stale threshold. The scheduler checks due state cheaply on every normal tick,
+then starts at most one Codex App Server subprocess at a time for each due
+healthy Session. Codex I/O happens outside the registry lock; only the final
+small cache update is locked. This keeps Telegram responsive, avoids concurrent
+subprocess bursts, and prevents a failed Session from blocking the others.
+
+`account/usage/read` returns sparse daily token buckets and a lifetime summary.
+OpenSwap stores only those aggregates. Rolling periods are calculated at render
+time from dates, so no derived counters need periodic rewrites. Manual Refresh
+forces collection; failed collection preserves the previous cache and marks it
+stale.
 
 Credentials are read once per unique assigned Session during a reconciliation
 pass, not once per host. Targets are rewritten only when the assigned OpenAI

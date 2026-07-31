@@ -9,7 +9,7 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-compatible-111111)](https://opencode.ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-<img src="docs/images/telegram-menu-v3.png" alt="OpenSwap Telegram Session menu" width="420">
+<img src="docs/images/telegram-menu-v4.png" alt="OpenSwap Telegram Session menu with token usage" width="420">
 
 </div>
 
@@ -19,9 +19,10 @@ which usage window resets first. Switching credentials by hand is easy to get
 wrong, and it gives you no useful view of account health or remaining usage.
 
 OpenSwap turns those credentials into named Sessions and puts the entire
-workflow in one compact Telegram message. It shows live usage, reset windows,
-login health, earned reset credits, and per-host routing. It changes only the
-OpenAI entry in `auth.json`, preserving every unrelated provider.
+workflow in one compact Telegram message. It shows live allowance, reset
+windows, account-wide token history, login health, earned reset credits, and
+per-host routing. It changes only the OpenAI entry in `auth.json`, preserving
+every unrelated provider.
 
 It is OpenCode-first and also works with
 [OpenCodez](https://github.com/Krablante/opencodez), which uses the same
@@ -37,7 +38,7 @@ That means every capability lives in one place:
 
 - add a Session with official Codex device-code or browser OAuth;
 - import an existing OpenCode or OpenCodez `auth.json`;
-- inspect plan, allowance, reset times, and login health;
+- inspect plan, allowance, reset times, token history, and login health;
 - refresh or reauthorize a Session;
 - select the default Session;
 - assign a different Session to one host;
@@ -136,6 +137,13 @@ with several Sessions and several hosts it is rendered as a separate
 `🖥 Host assignments` text block. The block is omitted for one Session or one
 host because it would only repeat the active/default state.
 
+The root also shows the combined 7-day and 30-day token totals. `Tokens` opens a
+comparison screen with 7-day, 30-day, and lifetime totals across all Sessions
+and the same three values for every Session. A Session detail adds active-day
+and peak-day context. Coverage is explicit when a Session has no data, so a
+partial total is never presented as complete. These are account-wide Codex
+token counts, not API billing costs and not host-level attribution.
+
 `System` is always available without taking over the interface:
 
 - with several hosts, `System` is on the left and `Hosts` is on the right of the
@@ -146,13 +154,14 @@ host because it would only repeat the active/default state.
 The System screen reports:
 
 ```text
-OpenSwap 2.0.0
+OpenSwap 2.1.0
 
 ✓ 🔐 OpenCode · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
 ✓ 💾 Storage
 ! 👤 Sessions · 2/3
 ✓ 📊 Usage freshness · 2/2
+✓ 🧮 Token statistics · 2/2
 ✓ 🌐 Hosts · 5/5
 
 Attention
@@ -166,6 +175,12 @@ Every scheduler tick refreshes usage and earned reset data for every healthy
 Session whose snapshot is due. OAuth refresh no longer suppresses usage refresh,
 and a failure in one Session cannot block another Session or the Telegram menu.
 Stale data is marked directly in the Session row and in System.
+
+Token history uses the official Codex App Server `account/usage/read` method.
+It is cached independently for 30 minutes because weekly and monthly aggregates
+do not justify starting a Codex subprocess every minute. Manual Refresh bypasses
+that cache. Collection is sequential and performed outside the registry lock,
+keeping transient CPU use low and Telegram actions responsive.
 
 ## More than one host
 

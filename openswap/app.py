@@ -66,6 +66,18 @@ def main() -> int:
                 print(
                     f"openswap: refresh warning: {exc}", file=sys.stderr, flush=True
                 )
+            try:
+                openswap.refresh_all_token_usage(
+                    max_age_seconds=(
+                        openswap.settings.token_usage_refresh_seconds
+                    )
+                )
+            except (OpenSwapError, CodexError) as exc:
+                print(
+                    f"openswap: token usage warning: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             next_refresh += config.scheduler_interval_seconds
             if next_refresh <= time.monotonic():
                 next_refresh = time.monotonic() + config.scheduler_interval_seconds

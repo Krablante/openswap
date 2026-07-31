@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import queue
@@ -428,6 +429,78 @@ class CodexClient:
             rate_limits_by_id={"codex": limits} if limits is not None else None,
             reset_credits=reset_credits,
         )
+
+    def account_usage(self, codex_home: Path) -> dict[str, Any]:
+        server = self._app_server(codex_home)
+        try:
+            result = server.request("account/usage/read", {})
+        finally:
+            server.close()
+        if not isinstance(result, dict):
+            raise CodexError("Codex returned invalid token usage")
+
+        buckets = result.get("dailyUsageBuckets")
+        if buckets is None:
+            buckets = []
+        if not isinstance(buckets, list):
+            raise CodexError("Codex returned invalid daily token usage")
+
+        daily: list[dict[str, Any]] = []
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            start_date = bucket.get("startDate")
+            tokens = bucket.get("tokens")
+            if (
+                not isinstance(start_date, str)
+                or not isinstance(tokens, int)
+                or isinstance(tokens, bool)
+                or tokens < 0
+            ):
+                continue
+            try:
+                dt.date.fromisoformat(start_date)
+            except ValueError:
+                continue
+            daily.append({"date": start_date, "tokens": tokens})
+        daily.sort(key=lambda item: item["date"])
+
+        raw_summary = result.get("summary")
+        summary = raw_summary if isinstance(raw_summary, dict) else {}
+
+        def optional_count(name: str) -> int | None:
+            value = summary.get(name)
+            if (
+                isinstance(value, int)
+                and not isinstance(value, bool)
+                and value >= 0
+            ):
+                return value
+            return None
+
+        def optional_date(name: str) -> str | None:
+            value = summary.get(name)
+            if not isinstance(value, str):
+                return None
+            try:
+                dt.date.fromisoformat(value)
+            except ValueError:
+                return None
+            return value
+
+        peak_bucket = max(daily, key=lambda item: item["tokens"], default=None)
+        peak_tokens = optional_count("peakDailyTokens")
+        if peak_tokens is None and peak_bucket is not None:
+            peak_tokens = peak_bucket["tokens"]
+        peak_day = peak_bucket["date"] if peak_bucket is not None else None
+
+        return {
+            "daily": daily,
+            "lifetime_tokens": optional_count("lifetimeTokens"),
+            "days_active": len(daily),
+            "peak_usage_tokens": peak_tokens,
+            "peak_usage_day": peak_day or optional_date("peakUsageDay"),
+        }
 
     def inspect(
         self,

@@ -29,6 +29,8 @@ from .sync import (
 )
 
 UTC = dt.UTC
+TOKEN_USAGE_REFRESH_SECONDS = 30 * 60
+TOKEN_USAGE_STALE_SECONDS = 2 * 60 * 60
 
 
 class OpenSwapError(RuntimeError):
@@ -53,6 +55,8 @@ class Settings:
     sync: SyncConfig | None
     refresh_margin_seconds: int = 20 * 60
     usage_stale_seconds: int = 3 * 60
+    token_usage_refresh_seconds: int = TOKEN_USAGE_REFRESH_SECONDS
+    token_usage_stale_seconds: int = TOKEN_USAGE_STALE_SECONDS
 
 
 def utc_now() -> dt.datetime:
@@ -141,6 +145,130 @@ def read_json(path: Path) -> Any:
 def account_name(account: dict[str, Any]) -> str:
     value = account.get("name") or account.get("alias")
     return str(value) if value else "Session"
+
+
+def token_usage_stats(
+    account: dict[str, Any],
+    *,
+    today: dt.date | None = None,
+    stale_after_seconds: int = TOKEN_USAGE_STALE_SECONDS,
+) -> dict[str, Any]:
+    usage = account.get("token_usage")
+    usage = usage if isinstance(usage, dict) else {}
+    raw_daily = usage.get("daily")
+    raw_daily = raw_daily if isinstance(raw_daily, list) else []
+    current_date = today or utc_now().date()
+    seven_day_start = current_date - dt.timedelta(days=6)
+    thirty_day_start = current_date - dt.timedelta(days=29)
+    all_daily = 0
+    seven_days = 0
+    thirty_days = 0
+    for item in raw_daily:
+        if not isinstance(item, dict):
+            continue
+        date_value = item.get("date")
+        tokens = item.get("tokens")
+        if (
+            not isinstance(date_value, str)
+            or not isinstance(tokens, int)
+            or isinstance(tokens, bool)
+            or tokens < 0
+        ):
+            continue
+        try:
+            day = dt.date.fromisoformat(date_value)
+        except ValueError:
+            continue
+        all_daily += tokens
+        if day > current_date:
+            continue
+        if day >= thirty_day_start:
+            thirty_days += tokens
+        if day >= seven_day_start:
+            seven_days += tokens
+
+    lifetime = usage.get("lifetime_tokens")
+    if (
+        not isinstance(lifetime, int)
+        or isinstance(lifetime, bool)
+        or lifetime < 0
+    ):
+        lifetime = all_daily
+    days_active = usage.get("days_active")
+    if (
+        not isinstance(days_active, int)
+        or isinstance(days_active, bool)
+        or days_active < 0
+    ):
+        days_active = None
+    peak_tokens = usage.get("peak_usage_tokens")
+    if (
+        not isinstance(peak_tokens, int)
+        or isinstance(peak_tokens, bool)
+        or peak_tokens < 0
+    ):
+        peak_tokens = None
+    peak_day = usage.get("peak_usage_day")
+    if not isinstance(peak_day, str):
+        peak_day = None
+
+    checked_at = parse_time(account.get("token_usage_checked_at"))
+    if checked_at is not None and checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=dt.UTC)
+    stale = checked_at is None or utc_now() - checked_at > dt.timedelta(
+        seconds=stale_after_seconds
+    )
+    if account.get("token_usage_error"):
+        stale = True
+    available = bool(usage) and (
+        isinstance(usage.get("lifetime_tokens"), int) or bool(raw_daily)
+    )
+    return {
+        "available": available,
+        "seven_days": seven_days,
+        "thirty_days": thirty_days,
+        "lifetime": lifetime,
+        "days_active": days_active,
+        "peak_tokens": peak_tokens,
+        "peak_day": peak_day,
+        "checked_at": checked_at,
+        "stale": stale,
+        "error": account.get("token_usage_error"),
+    }
+
+
+def token_usage_overview(
+    accounts: list[dict[str, Any]],
+    *,
+    stale_after_seconds: int = TOKEN_USAGE_STALE_SECONDS,
+) -> dict[str, Any]:
+    rows = [
+        {
+            "account": account,
+            "stats": token_usage_stats(
+                account, stale_after_seconds=stale_after_seconds
+            ),
+        }
+        for account in accounts
+    ]
+    available = [row for row in rows if row["stats"]["available"]]
+    checked = [
+        row["stats"]["checked_at"]
+        for row in available
+        if row["stats"]["checked_at"] is not None
+    ]
+    return {
+        "rows": rows,
+        "seven_days": sum(row["stats"]["seven_days"] for row in available),
+        "thirty_days": sum(
+            row["stats"]["thirty_days"] for row in available
+        ),
+        "lifetime": sum(row["stats"]["lifetime"] for row in available),
+        "available": len(available),
+        "fresh": sum(not row["stats"]["stale"] for row in available),
+        "total": len(rows),
+        "oldest_checked_at": min(checked) if checked else None,
+    }
 
 
 def openai_entry(document: Any, source: Path | str) -> dict[str, Any]:
@@ -622,6 +750,83 @@ class OpenSwap:
             max_age_seconds=0, source="manual"
         )["checked"]
 
+    def refresh_token_usage(
+        self,
+        selector: str,
+        *,
+        force: bool = True,
+        max_age_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        max_age = (
+            self.settings.token_usage_refresh_seconds
+            if max_age_seconds is None
+            else max_age_seconds
+        )
+        with self.locked():
+            registry = self._load_registry()
+            account_uuid, account = self._resolve_account(registry, selector)
+            attempted_at = parse_time(
+                account.get("token_usage_attempted_at")
+                or account.get("token_usage_checked_at")
+            )
+            if (
+                not force
+                and attempted_at is not None
+                and utc_now() - attempted_at < dt.timedelta(seconds=max_age)
+            ):
+                return dict(account)
+            if account.get("last_error") == "login required":
+                return dict(account)
+            codex_home = self._codex_home(account_uuid)
+
+        attempted = iso_now()
+        usage: dict[str, Any] | None = None
+        error: str | None = None
+        try:
+            usage = self.codex.account_usage(codex_home)
+        except (CodexError, OpenSwapError, OSError) as exc:
+            error = sanitize_error(exc)
+
+        with self.locked():
+            registry = self._load_registry()
+            account = registry["accounts"].get(account_uuid)
+            if account is None:
+                raise OpenSwapError(
+                    "account was removed during token usage refresh"
+                )
+            account["token_usage_attempted_at"] = attempted
+            if usage is not None:
+                account["token_usage"] = usage
+                account["token_usage_checked_at"] = attempted
+                account["token_usage_error"] = None
+            else:
+                account["token_usage_error"] = (
+                    error or "token usage refresh failed"
+                )
+            self._save_registry(registry)
+            return dict(account)
+
+    def refresh_all_token_usage(
+        self,
+        *,
+        force: bool = False,
+        max_age_seconds: int | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.locked():
+            registry = self._load_registry()
+            account_ids = [
+                account_uuid
+                for account_uuid, account in registry["accounts"].items()
+                if account.get("last_error") != "login required"
+            ]
+        for account_uuid in account_ids:
+            self.refresh_token_usage(
+                account_uuid,
+                force=force,
+                max_age_seconds=max_age_seconds,
+            )
+        return self.accounts()[0]
+
     def consume_reset(
         self, selector: str, *, idempotency_key: str
     ) -> tuple[dict[str, Any], str]:
@@ -934,6 +1139,7 @@ class OpenSwap:
         session_total = 0
         session_healthy = 0
         usage_fresh = 0
+        token_usage_fresh = 0
         try:
             with self.locked():
                 registry = self._load_registry()
@@ -955,6 +1161,14 @@ class OpenSwap:
                         <= self.settings.usage_stale_seconds
                     ):
                         usage_fresh += 1
+                    token_stats = token_usage_stats(
+                        account,
+                        stale_after_seconds=(
+                            self.settings.token_usage_stale_seconds
+                        ),
+                    )
+                    if token_stats["available"] and not token_stats["stale"]:
+                        token_usage_fresh += 1
         except OpenSwapError:
             issues.append("storage_invalid")
             storage_ok = False
@@ -962,6 +1176,8 @@ class OpenSwap:
             issues.append("sessions_require_login")
         if usage_fresh != session_healthy:
             issues.append("usage_stale")
+        if token_usage_fresh != session_healthy:
+            issues.append("token_usage_stale")
 
         sync = self.sync_status()
         if sync["enabled"] and sync["synced"] != sync["total"]:
@@ -982,6 +1198,7 @@ class OpenSwap:
                 "healthy": session_healthy,
                 "total": session_total,
                 "usage_fresh": usage_fresh,
+                "token_usage_fresh": token_usage_fresh,
             },
             "sync": sync,
         }
@@ -1596,6 +1813,10 @@ class OpenSwap:
             "reset_credits": snapshot.reset_credits,
             "last_error": error,
             "last_export_fingerprint": None,
+            "token_usage": None,
+            "token_usage_checked_at": None,
+            "token_usage_attempted_at": None,
+            "token_usage_error": None,
         }
 
     def _update_account(
