@@ -99,7 +99,7 @@ selector and removes its command message.
 The root contains Session rows, a compact combined token summary, `Add`,
 `Refresh`, and the bottom navigation:
 
-- `Tokens` occupies a separate full-width row when Sessions exist;
+- `Token activity` occupies a separate full-width row when Sessions exist;
 - multihost: `System` is left and `Hosts` is right on the final row;
 - single-host: `System` occupies the full final row.
 
@@ -110,11 +110,17 @@ host count exceed one. Dead assigned Sessions remain visible there. A one-
 Session or one-host deployment suppresses the block rather than repeating an
 obvious assignment.
 
-The Tokens view computes 7-day, 30-day, and lifetime totals from cached daily
-buckets. It shows the aggregate first and one compact comparison row per
-Session. Coverage is always visible; missing Sessions are never silently
-treated as zero. Session details add active-day and peak-day context. Counts are
-account-wide Codex usage, not monetary spend or host attribution.
+The Token activity view computes rolling 7-day, rolling 30-day, and lifetime
+totals from cached daily buckets. It shows the aggregate first and one compact
+comparison row per Session. Every value on the screen uses one shared unit, and
+an explicit `Σ Total` repeats the aggregate after the rows so displayed values
+can be checked directly. Missing Sessions are never silently treated as zero.
+
+Each Session is one unique ChatGPT account. `account/usage/read` is account-wide
+and already includes every Codex app or device using that account, including
+configured hosts. Host assignments affect credential routing only: they are not
+multiplied into token activity. Counts are not monetary spend, API billing,
+remaining allowance, or host-level attribution.
 
 The System view is computed only when opened or refreshed. It checks the
 configured OpenCode document, Codex version, registry and account slots,

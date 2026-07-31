@@ -478,28 +478,9 @@ class CodexClient:
                 return value
             return None
 
-        def optional_date(name: str) -> str | None:
-            value = summary.get(name)
-            if not isinstance(value, str):
-                return None
-            try:
-                dt.date.fromisoformat(value)
-            except ValueError:
-                return None
-            return value
-
-        peak_bucket = max(daily, key=lambda item: item["tokens"], default=None)
-        peak_tokens = optional_count("peakDailyTokens")
-        if peak_tokens is None and peak_bucket is not None:
-            peak_tokens = peak_bucket["tokens"]
-        peak_day = peak_bucket["date"] if peak_bucket is not None else None
-
         return {
             "daily": daily,
             "lifetime_tokens": optional_count("lifetimeTokens"),
-            "days_active": len(daily),
-            "peak_usage_tokens": peak_tokens,
-            "peak_usage_day": peak_day or optional_date("peakUsageDay"),
         }
 
     def inspect(

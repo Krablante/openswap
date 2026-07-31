@@ -194,24 +194,6 @@ def token_usage_stats(
         or lifetime < 0
     ):
         lifetime = all_daily
-    days_active = usage.get("days_active")
-    if (
-        not isinstance(days_active, int)
-        or isinstance(days_active, bool)
-        or days_active < 0
-    ):
-        days_active = None
-    peak_tokens = usage.get("peak_usage_tokens")
-    if (
-        not isinstance(peak_tokens, int)
-        or isinstance(peak_tokens, bool)
-        or peak_tokens < 0
-    ):
-        peak_tokens = None
-    peak_day = usage.get("peak_usage_day")
-    if not isinstance(peak_day, str):
-        peak_day = None
-
     checked_at = parse_time(account.get("token_usage_checked_at"))
     if checked_at is not None and checked_at.tzinfo is None:
         checked_at = checked_at.replace(tzinfo=dt.UTC)
@@ -228,9 +210,6 @@ def token_usage_stats(
         "seven_days": seven_days,
         "thirty_days": thirty_days,
         "lifetime": lifetime,
-        "days_active": days_active,
-        "peak_tokens": peak_tokens,
-        "peak_day": peak_day,
         "checked_at": checked_at,
         "stale": stale,
         "error": account.get("token_usage_error"),

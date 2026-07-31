@@ -142,7 +142,7 @@ The bot supports:
 - confirmed removal of unused Sessions;
 - confirmed earned reset redemption;
 - usage refresh for one or every Session;
-- combined and per-Session token statistics for 7 days, 30 days, and lifetime;
+- combined and per-Session token activity for 7 days, 30 days, and lifetime;
 - English and Russian interfaces;
 - System health and synchronization retry.
 
@@ -160,10 +160,13 @@ required. A transient error on one Session leaves its previous snapshot visible
 with a stale marker while other Sessions and Telegram menus continue updating.
 
 Account-wide token history refreshes independently every 30 minutes through the
-official Codex App Server. The Tokens screen shows total and per-Session 7-day,
-30-day, and lifetime values plus explicit coverage. Manual Refresh forces both
-allowance and token refresh. Token collection is sequential and does not hold
-the registry lock while Codex runs.
+official Codex App Server. The Token activity screen shows total and per-Session
+7-day, 30-day, and lifetime values in one shared unit, repeats `Σ Total`, and
+labels partial account coverage explicitly. The backend account profile already
+includes all Codex apps and configured hosts for that ChatGPT account; host
+assignments are not multiplied. Root and Session Refresh force both allowance
+and token refresh. Collection is sequential and does not hold the registry lock
+while Codex runs.
 
 ## Multihost configuration
 
@@ -259,12 +262,12 @@ Open System to identify whether one or several healthy Sessions missed their
 last usage refresh. The previous snapshot remains visible. Refresh is retried on
 the next scheduled tick; other Sessions continue updating independently.
 
-### Token statistics are missing or stale
+### Token activity is missing or stale
 
-Open Tokens and press Refresh. A Session requiring login cannot refresh its
-account history and remains outside coverage until reauthorized. A transient
-Codex error keeps the previous token cache visible with a stale marker and is
-retried after the independent 30-minute cache window.
+Open Token activity and press Refresh. A Session requiring login cannot refresh
+its account history and remains outside the available-account total until
+reauthorized. A transient Codex error keeps the previous token cache visible
+with a stale marker and is retried after the independent 30-minute cache window.
 
 ### A host remains offline
 

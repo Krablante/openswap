@@ -64,7 +64,7 @@ bounded, whitespace-normalized diagnostic, failure count, timestamp, and refresh
 source; a failed Session cannot suppress refresh or menu delivery for another
 Session.
 
-Token statistics contain only daily aggregate counts and a small lifetime
+Token activity contains only daily aggregate counts and a small lifetime
 summary returned by the official Codex App Server. OpenSwap does not persist
 prompts, completions, thread IDs, request traces, or model-level usage details.
 The Telegram view labels these values as Codex account usage rather than billing

@@ -127,8 +127,8 @@ def _system_issue_label(language: str, issue: str) -> str:
             "Данные лимитов одной или нескольких сессий устарели",
         ),
         "token_usage_stale": (
-            "Token statistics are stale for one or more Sessions",
-            "Статистика токенов одной или нескольких сессий устарела",
+            "Token activity is stale for one or more Sessions",
+            "Активность токенов одной или нескольких сессий устарела",
         ),
         "sync_incomplete": (
             "Some hosts are not synchronized",
@@ -205,14 +205,50 @@ def _reset_short(timestamp: Any, language: str) -> str:
     return _pick(language, f"{minutes}m", f"{minutes}м")
 
 
-def _format_tokens(value: int) -> str:
-    if value < 1_000:
-        return str(value)
-    if value < 1_000_000:
-        return f"{value / 1_000:.1f}K"
-    if value < 1_000_000_000:
-        return f"{value / 1_000_000:.1f}M"
-    return f"{value / 1_000_000_000:.2f}B"
+def _token_unit(overview: dict[str, Any]) -> tuple[int, str]:
+    largest = max(
+        overview["seven_days"],
+        overview["thirty_days"],
+        overview["lifetime"],
+    )
+    if largest >= 1_000_000_000_000:
+        return 1_000_000_000, "B"
+    if largest >= 1_000_000:
+        return 1_000_000, "M"
+    if largest >= 1_000:
+        return 1_000, "K"
+    return 1, ""
+
+
+def _format_token_value(
+    value: int,
+    unit: tuple[int, str],
+    language: str,
+    *,
+    suffix: bool = True,
+) -> str:
+    divisor, label = unit
+    if divisor == 1:
+        formatted = f"{value:,}"
+    else:
+        formatted = f"{value / divisor:,.3f}"
+    if language == "ru":
+        formatted = formatted.replace(",", "\u00a0").replace(".", ",")
+    if not suffix:
+        return formatted
+    if language == "ru":
+        label = {"K": " тыс.", "M": " млн", "B": " млрд"}.get(label, "")
+    return formatted + label
+
+
+def _token_unit_description(unit: tuple[int, str], language: str) -> str:
+    label = unit[1]
+    descriptions = {
+        "K": ("thousands of tokens (K)", "тысячи токенов (тыс.)"),
+        "M": ("millions of tokens (M)", "миллионы токенов (млн)"),
+        "B": ("billions of tokens (B)", "миллиарды токенов (млрд)"),
+    }
+    return _pick(language, *descriptions.get(label, ("tokens", "токены")))
 
 
 def _token_age(moment: dt.datetime | None, language: str) -> str:
@@ -235,14 +271,18 @@ def _token_age(moment: dt.datetime | None, language: str) -> str:
     return _pick(language, f"{days}d ago", f"{days} дн. назад")
 
 
-def _token_usage_block(account: dict[str, Any], language: str) -> list[str]:
+def _token_usage_block(
+    account: dict[str, Any],
+    language: str,
+    unit: tuple[int, str],
+) -> list[str]:
     stats = token_usage_stats(account)
     if not stats["available"]:
         return [
             _pick(
                 language,
-                "   🧮 Tokens: <i>not collected yet</i>",
-                "   🧮 Токены: <i>ещё не собраны</i>",
+                "🧮 Token activity: <i>not collected yet</i>",
+                "🧮 Активность токенов: <i>ещё не собрана</i>",
             )
         ]
     stale = (
@@ -251,30 +291,24 @@ def _token_usage_block(account: dict[str, Any], language: str) -> list[str]:
         else ""
     )
     lines = [
-        _pick(language, "   🧮 Tokens", "   🧮 Токены")
-        + _pick(language, ": 7d ", ": 7 д. ")
-        + f"<b>{_format_tokens(stats['seven_days'])}</b> · "
-        + _pick(language, "30d ", "30 д. ")
-        + f"<b>{_format_tokens(stats['thirty_days'])}</b>{stale}",
-        _pick(language, "      Lifetime", "      За всё время")
-        + f": <b>{_format_tokens(stats['lifetime'])}</b>",
-    ]
-    if stats["days_active"] is not None:
-        lines[-1] += _pick(
+        _pick(
             language,
-            f" · {stats['days_active']} active days",
-            f" · активных дней: {stats['days_active']}",
+            "🧮 <b>Token activity</b> · all Codex apps/devices",
+            "🧮 <b>Активность токенов</b> · все приложения/устройства Codex",
         )
-    if stats["peak_tokens"] is not None and stats["peak_day"]:
+        + stale,
+        _pick(language, "   7d ", "   7 д. ")
+        + f"<b>{_format_token_value(stats['seven_days'], unit, language)}</b> · "
+        + _pick(language, "30d ", "30 д. ")
+        + f"<b>{_format_token_value(stats['thirty_days'], unit, language)}</b>",
+        _pick(language, "   All time", "   За всё время")
+        + f": <b>{_format_token_value(stats['lifetime'], unit, language)}</b>",
+    ]
+    if stats["stale"]:
         lines.append(
-            _pick(language, "      Peak", "      Пик")
-            + f": <b>{_format_tokens(stats['peak_tokens'])}</b> · "
-            + html.escape(stats["peak_day"])
+            _pick(language, "   Updated ", "   Обновлено ")
+            + f"<i>{_token_age(stats['checked_at'], language)}</i>"
         )
-    lines.append(
-        _pick(language, "      Updated ", "      Обновлено ")
-        + f"<i>{_token_age(stats['checked_at'], language)}</i>"
-    )
     return lines
 
 
@@ -314,7 +348,13 @@ def _limit_buckets(account: dict[str, Any]) -> list[dict[str, Any]]:
     return [limits] if isinstance(limits, dict) else []
 
 
-def _account_block(account: dict[str, Any], *, active: bool, language: str) -> str:
+def _account_block(
+    account: dict[str, Any],
+    *,
+    active: bool,
+    language: str,
+    token_unit: tuple[int, str],
+) -> str:
     marker = "●" if active else "○"
     if account.get("last_error") == "login required":
         marker = "⚠"
@@ -335,7 +375,7 @@ def _account_block(account: dict[str, Any], *, active: bool, language: str) -> s
                 "   🔑 Требуется повторный вход",
             )
         )
-        lines.extend(_token_usage_block(account, language))
+        lines.extend(_token_usage_block(account, language, token_unit))
         return "\n".join(lines)
 
     buckets = _limit_buckets(account)
@@ -385,7 +425,7 @@ def _account_block(account: dict[str, Any], *, active: bool, language: str) -> s
                 "   🕒 <i>обновление лимитов задерживается</i>",
             )
         )
-    lines.extend(_token_usage_block(account, language))
+    lines.extend(_token_usage_block(account, language, token_unit))
     return "\n".join(lines)
 
 
@@ -750,8 +790,8 @@ class TelegramBot:
                     message_id=message_id,
                     notice=_pick(
                         language,
-                        "Refreshing token statistics…",
-                        "Обновляю статистику токенов…",
+                        "Refreshing token activity…",
+                        "Обновляю активность токенов…",
                     ),
                     view_account="__tokens__",
                 )
@@ -762,8 +802,8 @@ class TelegramBot:
                     message_id=message_id,
                     notice=_pick(
                         language,
-                        "Token statistics refreshed",
-                        "Статистика токенов обновлена",
+                        "Token activity refreshed",
+                        "Активность токенов обновлена",
                     ),
                     view_account="__tokens__",
                 )
@@ -1377,6 +1417,8 @@ class TelegramBot:
         selected = next(
             (account for account in accounts if account["id"] == view_account), None
         )
+        token_overview = token_usage_overview(accounts)
+        token_unit = _token_unit(token_overview)
         host_target = None
         if isinstance(view_account, str) and view_account.startswith("__host__:"):
             host_name = view_account.removeprefix("__host__:")
@@ -1391,7 +1433,7 @@ class TelegramBot:
         elif view_account == "__tokens__":
             lines = [
                 "📊 <b>OpenSwap</b> · "
-                + _pick(language, "token usage", "статистика токенов")
+                + _pick(language, "token activity", "активность токенов")
             ]
         elif view_account in {"__hosts__", "__hosts_reset__"}:
             lines = [f"🌐 <b>OpenSwap</b> · {_pick(language, 'hosts', 'хосты')}"]
@@ -1458,8 +1500,8 @@ class TelegramBot:
                     f"{_status_icon(sessions['token_usage_fresh'] == sessions['healthy'])} "
                     + _pick(
                         language,
-                        "🧮 Token statistics",
-                        "🧮 Статистика токенов",
+                        "🧮 Token activity",
+                        "🧮 Активность токенов",
                     )
                     + f" · {sessions['token_usage_fresh']}/{sessions['healthy']}",
                 ]
@@ -1493,18 +1535,21 @@ class TelegramBot:
                 )
             lines.append("")
         elif view_account == "__tokens__":
-            overview = token_usage_overview(accounts)
+            overview = token_overview
+            unit_label = _token_unit_description(token_unit, language)
             lines.extend(
                 [
-                    f"<b>{_pick(language, 'All sessions', 'Все сессии')}</b>",
-                    _pick(language, "7 days", "7 дней")
-                    + f": <b>{_format_tokens(overview['seven_days'])}</b>",
-                    _pick(language, "30 days", "30 дней")
-                    + f": <b>{_format_tokens(overview['thirty_days'])}</b>",
-                    _pick(language, "Lifetime", "За всё время")
-                    + f": <b>{_format_tokens(overview['lifetime'])}</b>",
+                    f"<b>{_pick(language, 'Total · available accounts', 'Итого · доступные аккаунты')}</b>"
+                    + f": {overview['available']}/{overview['total']}",
+                    _pick(language, "Last 7 days", "Последние 7 дней")
+                    + f": <b>{_format_token_value(overview['seven_days'], token_unit, language)}</b>",
+                    _pick(language, "Last 30 days", "Последние 30 дней")
+                    + f": <b>{_format_token_value(overview['thirty_days'], token_unit, language)}</b>",
+                    _pick(language, "All time", "За всё время")
+                    + f": <b>{_format_token_value(overview['lifetime'], token_unit, language)}</b>",
                     "",
-                    f"<b>{_pick(language, 'By session · 7d / 30d / lifetime', 'По сессиям · 7 д. / 30 д. / всё время')}</b>",
+                    f"<b>{_pick(language, 'By session · 7d / 30d / all time', 'По сессиям · 7 д. / 30 д. / всё время')}</b>",
+                    _pick(language, "Unit", "Единица") + f": {unit_label}",
                 ]
             )
             for row in overview["rows"]:
@@ -1526,15 +1571,20 @@ class TelegramBot:
                     continue
                 stale = " ⚠" if stats["stale"] else ""
                 lines.append(
-                    f"• {label} · {_format_tokens(stats['seven_days'])} / "
-                    f"{_format_tokens(stats['thirty_days'])} / "
-                    f"{_format_tokens(stats['lifetime'])}{stale}"
+                    f"• {label} · "
+                    f"{_format_token_value(stats['seven_days'], token_unit, language, suffix=False)} / "
+                    f"{_format_token_value(stats['thirty_days'], token_unit, language, suffix=False)} / "
+                    f"{_format_token_value(stats['lifetime'], token_unit, language, suffix=False)}{stale}"
                 )
             lines.extend(
                 [
                     "",
-                    _pick(language, "Data coverage", "Охват данных")
-                    + f": <b>{overview['available']}/{overview['total']}</b>",
+                    (
+                        f"<b>Σ {_pick(language, 'Total', 'Итого')}</b> · "
+                        f"{_format_token_value(overview['seven_days'], token_unit, language, suffix=False)} / "
+                        f"{_format_token_value(overview['thirty_days'], token_unit, language, suffix=False)} / "
+                        f"{_format_token_value(overview['lifetime'], token_unit, language, suffix=False)}"
+                    ),
                 ]
             )
             if overview["oldest_checked_at"] is not None:
@@ -1547,8 +1597,8 @@ class TelegramBot:
                     "",
                     _pick(
                         language,
-                        "Account-wide Codex totals; they are not billing costs.",
-                        "Общие данные Codex по аккаунтам; это не денежные расходы.",
+                        "Per ChatGPT account across all Codex apps/devices, including configured hosts. Host assignments are not multiplied. This is not billing or remaining allowance.",
+                        "По каждому ChatGPT-аккаунту во всех приложениях/устройствах Codex, включая настроенные хосты. Назначения хостов не умножают значения. Это не биллинг и не остаток лимита.",
                     ),
                     "",
                 ]
@@ -1678,6 +1728,7 @@ class TelegramBot:
                     selected,
                     active=selected["id"] == effective_active,
                     language=language,
+                    token_unit=token_unit,
                 )
             )
             lines.append("")
@@ -1743,24 +1794,19 @@ class TelegramBot:
                                 f"{_host_count_label(int(account.get('target_count') or 0), language)}"
                                 for account in assignments
                             )
-            overview = token_usage_overview(accounts)
+            overview = token_overview
             if overview["available"]:
-                coverage = (
-                    _pick(language, " · coverage ", " · охват ")
-                    + f"{overview['available']}/{overview['total']}"
-                    if overview["available"] != overview["total"]
-                    else ""
-                )
                 lines.extend(
                     [
                         "",
                         "📊 "
-                        + _pick(language, "Tokens", "Токены")
-                        + _pick(language, " · 7d ", " · 7 д. ")
-                        + f"<b>{_format_tokens(overview['seven_days'])}</b>"
-                        + _pick(language, " · 30d ", " · 30 д. ")
-                        + f"<b>{_format_tokens(overview['thirty_days'])}</b>"
-                        + coverage,
+                        + _pick(language, "Token activity", "Активность токенов")
+                        + f" · {overview['available']}/{overview['total']} "
+                        + _pick(language, "accounts", "аккаунтов"),
+                        _pick(language, "Last 7 days", "Последние 7 дней")
+                        + f" <b>{_format_token_value(overview['seven_days'], token_unit, language)}</b>"
+                        + _pick(language, " · last 30 days ", " · последние 30 дней ")
+                        + f"<b>{_format_token_value(overview['thirty_days'], token_unit, language)}</b>",
                     ]
                 )
             else:
@@ -1770,8 +1816,8 @@ class TelegramBot:
                         "📊 "
                         + _pick(
                             language,
-                            "Tokens · collecting statistics",
-                            "Токены · статистика собирается",
+                            "Token activity · collecting data",
+                            "Активность токенов · данные собираются",
                         ),
                     ]
                 )
@@ -2047,7 +2093,11 @@ class TelegramBot:
             keyboard.append(
                 [
                     {
-                        "text": _pick(language, "📊 Tokens", "📊 Токены"),
+                        "text": _pick(
+                            language,
+                            "📊 Token activity",
+                            "📊 Активность токенов",
+                        ),
                         "callback_data": "tokens",
                     }
                 ]

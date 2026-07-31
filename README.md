@@ -9,7 +9,7 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-compatible-111111)](https://opencode.ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-<img src="docs/images/telegram-menu-v4.png" alt="OpenSwap Telegram Session menu with token usage" width="420">
+<img src="docs/images/telegram-menu-v5.png" alt="OpenSwap Telegram Session menu with account-wide token activity" width="420">
 
 </div>
 
@@ -137,12 +137,18 @@ with several Sessions and several hosts it is rendered as a separate
 `🖥 Host assignments` text block. The block is omitted for one Session or one
 host because it would only repeat the active/default state.
 
-The root also shows the combined 7-day and 30-day token totals. `Tokens` opens a
-comparison screen with 7-day, 30-day, and lifetime totals across all Sessions
-and the same three values for every Session. A Session detail adds active-day
-and peak-day context. Coverage is explicit when a Session has no data, so a
-partial total is never presented as complete. These are account-wide Codex
-token counts, not API billing costs and not host-level attribution.
+The root also shows the combined rolling 7-day and 30-day token activity.
+`Token activity` opens a comparison screen with 7-day, 30-day, and lifetime
+totals across all available Sessions and the same three values for every
+Session. The screen uses one shared unit and repeats an explicit `Σ Total`, so
+the displayed rows can be added directly. Missing Sessions remain visible and
+partial totals are labeled with the available account count.
+
+The source is account-wide: each Session represents one ChatGPT account, and
+its values already include every Codex app or device using that account,
+including configured hosts. Host assignments are therefore never multiplied.
+The values are backend-reported token activity, not API billing, monetary cost,
+remaining allowance, or host-level attribution.
 
 `System` is always available without taking over the interface:
 
@@ -154,14 +160,14 @@ token counts, not API billing costs and not host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.1.0
+OpenSwap 2.1.1
 
 ✓ 🔐 OpenCode · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
 ✓ 💾 Storage
 ! 👤 Sessions · 2/3
 ✓ 📊 Usage freshness · 2/2
-✓ 🧮 Token statistics · 2/2
+✓ 🧮 Token activity · 2/2
 ✓ 🌐 Hosts · 5/5
 
 Attention
