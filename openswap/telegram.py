@@ -375,7 +375,7 @@ def _root_label(account: dict[str, Any], *, active: bool, language: str) -> str:
         if isinstance(candidate, dict):
             window = candidate
             break
-    details = _pick(language, "no data", "нет данных")
+    details = _limit_status_short(account, language)
     if isinstance(window, dict) and isinstance(window.get("usedPercent"), (int, float)):
         left = max(0, min(100, round(100 - window["usedPercent"])))
         details = f"{left}% · {_reset_short(window.get('resetsAt'), language)}"
@@ -394,6 +394,31 @@ def _limit_buckets(account: dict[str, Any]) -> list[dict[str, Any]]:
             return buckets
     limits = account.get("limits")
     return [limits] if isinstance(limits, dict) else []
+
+
+def _limit_status(account: dict[str, Any]) -> dict[str, Any]:
+    value = account.get("limit_status")
+    return value if isinstance(value, dict) else {}
+
+
+def _limit_status_short(account: dict[str, Any], language: str) -> str:
+    status = _limit_status(account)
+    if status.get("reached") is True:
+        label = _pick(language, "limit reached", "лимит исчерпан")
+        reset_at = status.get("reset_at")
+        if isinstance(reset_at, (int, float)):
+            label += f" · {_reset_short(reset_at, language)}"
+        return label
+    if status.get("unlimited") is True:
+        return _pick(language, "unlimited", "без лимита")
+    plan = account.get("plan")
+    if isinstance(plan, str) and plan:
+        return _pick(
+            language,
+            f"{plan} · allowance unavailable",
+            f"{plan} · окно лимита недоступно",
+        )
+    return _pick(language, "allowance unavailable", "лимит недоступен")
 
 
 def _account_block(
@@ -428,13 +453,37 @@ def _account_block(
 
     buckets = _limit_buckets(account)
     if not buckets:
-        lines.append(
-            _pick(
-                language,
-                "   📊 Limits have not been loaded yet",
-                "   📊 Лимиты ещё не загружены",
+        status = _limit_status(account)
+        if status.get("reached") is True:
+            lines.append(
+                _pick(
+                    language,
+                    "   ⛔ Workspace limit reached",
+                    "   ⛔ Лимит workspace исчерпан",
+                )
             )
-        )
+            reset_at = status.get("reset_at")
+            if isinstance(reset_at, (int, float)):
+                lines.append(
+                    _pick(language, "      Resets ", "      Восстановится ")
+                    + f"<b>{_reset_time(reset_at, language)}</b>"
+                )
+        elif status.get("unlimited") is True:
+            lines.append(
+                _pick(
+                    language,
+                    "   📊 Unlimited workspace allowance",
+                    "   📊 Безлимитный workspace",
+                )
+            )
+        else:
+            lines.append(
+                _pick(
+                    language,
+                    "   📊 Allowance window is unavailable",
+                    "   📊 Окно лимита недоступно",
+                )
+            )
     for bucket in buckets:
         windows = [bucket.get("primary"), bucket.get("secondary")]
         for window in windows:
@@ -1260,10 +1309,17 @@ class TelegramBot:
             self.pending_logins.pop(chat_id, None)
         if error is not None:
             self._rollback_login(pending)
+            if pending.previous_auth is None:
+                with self.menu_lock:
+                    self.login_choices.add(chat_id)
             self._show_menu(
                 chat_id,
                 user_id,
-                notice=_pick(language, f"Sign-in was not completed: {error}", f"Вход не завершён: {error}"),
+                notice=_pick(
+                    language,
+                    f"Sign-in was not completed: {error}. Try another method or import auth.json.",
+                    f"Вход не завершён: {error}. Попробуйте другой способ или импортируйте auth.json.",
+                ),
                 view_account=None,
             )
             return
@@ -1276,6 +1332,9 @@ class TelegramBot:
                 )
         except (OpenSwapError, CodexError) as exc:
             self._rollback_login(pending)
+            if pending.previous_auth is None:
+                with self.menu_lock:
+                    self.login_choices.add(chat_id)
             action = _pick(
                 language,
                 "Session was not reauthorized" if pending.previous_auth is not None else "Session not added",
@@ -1353,6 +1412,7 @@ class TelegramBot:
                 "__hosts_reset__",
                 "__language__",
                 "__system__",
+                "__tokens__",
             }
             if isinstance(view_account, str) and view_account.startswith("__host__:"):
                 target_name = view_account.removeprefix("__host__:")
@@ -1760,7 +1820,11 @@ class TelegramBot:
             lines.extend(
                 [
                     _pick(language, "Choose an official Codex sign-in method.", "Выберите официальный способ входа Codex."),
-                    _pick(language, "Device Code is simpler and safer in Telegram.", "Device Code проще и безопаснее для Telegram."),
+                    _pick(
+                        language,
+                        "Device Code requires workspace permission; Browser supports SSO; Codex CLI auth.json is the reliable fallback.",
+                        "Device Code требует разрешения workspace; Browser поддерживает SSO; auth.json из Codex CLI — надёжный запасной способ.",
+                    ),
                     "",
                 ]
             )
@@ -1770,8 +1834,8 @@ class TelegramBot:
                     _pick(language, "Send <code>auth.json</code> as a document.", "Отправьте <code>auth.json</code> как документ."),
                     _pick(
                         language,
-                        "OpenCode and OpenCodez auth.json files are supported.",
-                        "Поддерживаются auth.json из OpenCode и OpenCodez.",
+                        "Codex CLI, OpenCode, and OpenCodez auth.json files are supported.",
+                        "Поддерживаются auth.json из Codex CLI, OpenCode и OpenCodez.",
                     ),
                     _pick(language, "The credential message will be deleted after download.", "Credential-сообщение будет удалено после скачивания."),
                     "",

@@ -532,6 +532,7 @@ class OpenSwap:
                     + ", ".join(assigned_targets)
                 )
             del registry["accounts"][account_uuid]
+            self._normalize_accounts(registry)
             self._save_registry(registry)
             shutil.rmtree(self._account_dir(account_uuid), ignore_errors=True)
             return account
@@ -1735,6 +1736,7 @@ class OpenSwap:
                 rate_limits_by_id=usage.rate_limits_by_id,
                 reset_credits=usage.reset_credits,
                 reset_outcome=snapshot.reset_outcome,
+                limit_status=usage.limit_status,
             )
         return snapshot
 
@@ -1789,6 +1791,7 @@ class OpenSwap:
             "plan": self._plan(snapshot),
             "limits": snapshot.rate_limits,
             "limits_by_id": snapshot.rate_limits_by_id,
+            "limit_status": snapshot.limit_status,
             "reset_credits": snapshot.reset_credits,
             "last_error": error,
             "last_export_fingerprint": None,
@@ -1823,10 +1826,9 @@ class OpenSwap:
     ) -> None:
         account = registry["accounts"][account_uuid]
         account["plan"] = self._plan(snapshot) or account.get("plan")
-        if snapshot.rate_limits is not None:
-            account["limits"] = snapshot.rate_limits
-        if snapshot.rate_limits_by_id is not None:
-            account["limits_by_id"] = snapshot.rate_limits_by_id
+        account["limits"] = snapshot.rate_limits
+        account["limits_by_id"] = snapshot.rate_limits_by_id or {}
+        account["limit_status"] = snapshot.limit_status
         if snapshot.reset_credits is not None:
             account["reset_credits"] = snapshot.reset_credits
         if any(
@@ -1835,6 +1837,7 @@ class OpenSwap:
                 snapshot.rate_limits,
                 snapshot.rate_limits_by_id,
                 snapshot.reset_credits,
+                snapshot.limit_status,
             )
         ):
             account["limits_checked_at"] = iso_now()
@@ -1888,29 +1891,15 @@ class OpenSwap:
 
     @staticmethod
     def _normalize_accounts(registry: dict[str, Any]) -> None:
-        used: set[int] = set()
         ordered = sorted(
             registry["accounts"].items(),
             key=lambda item: (str(item[1].get("created_at", "")), item[0]),
         )
-        next_sequence = 1
-        for _, account in ordered:
-            sequence = account.get("sequence")
-            if not isinstance(sequence, int) or sequence < 1 or sequence in used:
-                while next_sequence in used:
-                    next_sequence += 1
-                sequence = next_sequence
-            used.add(sequence)
-            next_sequence = max(next_sequence, sequence + 1)
+        for sequence, (_, account) in enumerate(ordered, start=1):
             account["sequence"] = sequence
             account["alias"] = f"session-{sequence}"
             account["name"] = f"Session {sequence}"
-        minimum_next = max(used, default=0) + 1
-        configured_next = registry.get("next_sequence")
-        registry["next_sequence"] = max(
-            configured_next if isinstance(configured_next, int) else 1,
-            minimum_next,
-        )
+        registry["next_sequence"] = len(ordered) + 1
 
     @staticmethod
     def _allocate_sequence(registry: dict[str, Any]) -> int:

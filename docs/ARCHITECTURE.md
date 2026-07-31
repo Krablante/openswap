@@ -52,6 +52,12 @@ timestamps, Telegram menu state, one default Session UUID, and sparse host
 overrides. It never stores raw access or refresh tokens, prompts, completions,
 or per-request traces.
 
+Session UUIDs are stable identities used by default routing, sparse target
+overrides, Telegram callbacks, and account directories. `Session N`,
+`session-N`, and `sequence` are compact presentation labels. Registry
+normalization assigns them chronologically as `1..N` after deletion and sets
+`next_sequence=N+1`; it never rewrites UUID-based relationships.
+
 Each account slot contains the canonical credential document for one ChatGPT
 account. The live OpenCode `auth.json` and remote target files are published
 views. Only their `openai` entry may be replaced; unrelated providers survive
@@ -172,6 +178,12 @@ refresh per tick. Token refresh and usage refresh share the same account pass,
 so token rotation never skips limits and never causes a duplicate limits call.
 Per-Session refresh failures are retained as safe metadata and surfaced as
 stale usage in Telegram System and Session views.
+
+The allowance response is also normalized into a small `limit_status` object.
+This preserves managed-workspace spend-control exhaustion, its reset time, and
+explicit unlimited state even when the backend returns `rate_limit=null`.
+Successful refresh replaces the old rate-limit snapshot, so a null window cannot
+leave stale percentages visible.
 
 Token history has an independent fixed 30-minute cache window and a two-hour
 stale threshold. The scheduler checks due state cheaply on every normal tick,

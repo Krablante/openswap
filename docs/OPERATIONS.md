@@ -146,6 +146,10 @@ The bot supports:
 - English and Russian interfaces;
 - System health and synchronization retry.
 
+Deleting an unassigned, non-default Session compacts the remaining display
+numbers immediately. This changes labels only; UUID-based routing and credential
+directories are preserved.
+
 The System button is always on the root screen. With several hosts it is on the
 left and Hosts is on the right of the same row. In single-host mode System
 occupies the whole row.
@@ -269,6 +273,21 @@ Open Token activity and press Refresh. A Session requiring login cannot refresh
 its account history and remains outside the available-account total until
 reauthorized. A transient Codex error keeps the previous token cache visible
 with a stale marker and is retried after the independent 30-minute cache window.
+
+### Managed workspace shows no percentage
+
+Business workspaces can return `rate_limit=null` when workspace spend control is
+reached. OpenSwap shows `Workspace limit reached` and the backend reset time;
+this is a healthy authenticated Session, not missing data. If neither a rate
+window nor an explicit workspace state is available, Telegram says `Allowance
+window is unavailable` instead of inventing a percentage.
+
+### Managed-workspace sign-in fails
+
+Device Code is a beta Codex option and may need an administrator to enable it
+for the workspace. Browser sign-in is appropriate for SSO but requires the
+callback to complete. After either failure, choose another method or import the
+`auth.json` produced by a successful Codex CLI, OpenCode, or OpenCodez login.
 
 ### A host remains offline
 

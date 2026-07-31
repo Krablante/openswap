@@ -31,6 +31,7 @@ class CodexSnapshot:
     rate_limits_by_id: dict[str, Any] | None = None
     reset_credits: dict[str, Any] | None = None
     reset_outcome: str | None = None
+    limit_status: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -428,7 +429,39 @@ class CodexClient:
             rate_limits=limits,
             rate_limits_by_id={"codex": limits} if limits is not None else None,
             reset_credits=reset_credits,
+            limit_status=self._limit_status(raw),
         )
+
+    @staticmethod
+    def _limit_status(raw: Any) -> dict[str, Any] | None:
+        if not isinstance(raw, dict):
+            return None
+        reached_raw = raw.get("rate_limit_reached_type")
+        reached_type = (
+            reached_raw.get("type") if isinstance(reached_raw, dict) else None
+        )
+        if not isinstance(reached_type, str):
+            reached_type = None
+        spend_control = raw.get("spend_control")
+        spend_reached = (
+            spend_control.get("reached") is True
+            if isinstance(spend_control, dict)
+            else False
+        )
+        upsell = raw.get("rate_limit_upsell")
+        reset_at = upsell.get("reset_at") if isinstance(upsell, dict) else None
+        if not isinstance(reset_at, int) or isinstance(reset_at, bool) or reset_at <= 0:
+            reset_at = None
+        credits = raw.get("credits")
+        unlimited = (
+            credits.get("unlimited") is True if isinstance(credits, dict) else False
+        )
+        return {
+            "reached": bool(reached_type) or spend_reached,
+            "reason": reached_type,
+            "reset_at": reset_at,
+            "unlimited": unlimited,
+        }
 
     def account_usage(self, codex_home: Path) -> dict[str, Any]:
         server = self._app_server(codex_home)

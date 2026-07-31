@@ -9,7 +9,7 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-compatible-111111)](https://opencode.ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-<img src="docs/images/telegram-menu-v6.png" alt="OpenSwap Telegram Session menu with account-wide token activity in billions" width="420">
+<img src="docs/images/telegram-menu-v7.png" alt="OpenSwap Telegram Session menu with compact numbering and managed workspace status" width="420">
 
 </div>
 
@@ -37,7 +37,7 @@ interface: Telegram.
 That means every capability lives in one place:
 
 - add a Session with official Codex device-code or browser OAuth;
-- import an existing OpenCode or OpenCodez `auth.json`;
+- import an existing Codex CLI, OpenCode, or OpenCodez `auth.json`;
 - inspect plan, allowance, reset times, token history, and login health;
 - refresh or reauthorize a Session;
 - select the default Session;
@@ -137,6 +137,12 @@ with several Sessions and several hosts it is rendered as a separate
 `🖥 Host assignments` text block. The block is omitted for one Session or one
 host because it would only repeat the active/default state.
 
+Session numbers are compact display labels, not identities. Deleting a Session
+immediately renumbers the remaining labels without gaps (`1, 3` becomes `1,
+2`). Stable UUIDs remain unchanged, so default routing, host overrides, menu
+callbacks, and isolated credential slots continue to reference the same
+accounts.
+
 The root also shows the combined rolling 7-day and 30-day token activity.
 `Token activity` opens a comparison screen with 7-day, 30-day, and lifetime
 totals across all available Sessions and the same three values for every
@@ -162,7 +168,7 @@ remaining allowance, or host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.1.2
+OpenSwap 2.2.0
 
 ✓ 🔐 OpenCode · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
@@ -183,6 +189,17 @@ Every scheduler tick refreshes usage and earned reset data for every healthy
 Session whose snapshot is due. OAuth refresh no longer suppresses usage refresh,
 and a failure in one Session cannot block another Session or the Telegram menu.
 Stale data is marked directly in the Session row and in System.
+
+Managed Business workspaces can return no ordinary rate-limit window while a
+workspace spend control is active. OpenSwap preserves that status separately:
+instead of `no data`, Telegram shows `Workspace limit reached` and the backend
+reset time. Other explicit states include unlimited workspace allowance and an
+unavailable allowance window.
+
+For managed-workspace sign-in, Device Code may require an administrator to
+enable device-code authentication. Browser sign-in supports SSO but still
+depends on its callback completing. If either method fails, Telegram returns to
+the sign-in choices and offers the official transferable `auth.json` fallback.
 
 Token history uses the official Codex App Server `account/usage/read` method.
 It is cached independently for 30 minutes because weekly and monthly aggregates
