@@ -161,12 +161,13 @@ with a stale marker while other Sessions and Telegram menus continue updating.
 
 Account-wide token history refreshes independently every 30 minutes through the
 official Codex App Server. The Token activity screen shows total and per-Session
-7-day, 30-day, and lifetime values in one shared unit, repeats `Σ Total`, and
-labels partial account coverage explicitly. The backend account profile already
-includes all Codex apps and configured hosts for that ChatGPT account; host
-assignments are not multiplied. Root and Session Refresh force both allowance
-and token refresh. Collection is sequential and does not hold the registry lock
-while Codex runs.
+7-day, 30-day, and lifetime values in one natural shared unit (`B` for
+billion-scale totals), repeats an approximate `Σ Total` calculated from the
+displayed three-decimal rows, and labels partial account coverage explicitly.
+Raw calculations remain exact. The backend account profile already includes all
+Codex apps and configured hosts for that ChatGPT account; host assignments are
+not multiplied. Root and Session Refresh force both allowance and token refresh.
+Collection is sequential and does not hold the registry lock while Codex runs.
 
 ## Multihost configuration
 

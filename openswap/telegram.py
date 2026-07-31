@@ -205,48 +205,96 @@ def _reset_short(timestamp: Any, language: str) -> str:
     return _pick(language, f"{minutes}m", f"{minutes}м")
 
 
-def _token_unit(overview: dict[str, Any]) -> tuple[int, str]:
+def _rounded_token_value(value: int, divisor: int, precision: int) -> int:
+    scale = 10**precision
+    return (value * scale + divisor // 2) // divisor
+
+
+def _token_unit(overview: dict[str, Any]) -> tuple[int, str, int]:
     largest = max(
         overview["seven_days"],
         overview["thirty_days"],
         overview["lifetime"],
     )
     if largest >= 1_000_000_000_000:
-        return 1_000_000_000, "B"
-    if largest >= 1_000_000:
-        return 1_000_000, "M"
-    if largest >= 1_000:
-        return 1_000, "K"
-    return 1, ""
+        return 1_000_000_000_000, "T", 3
+    elif largest >= 1_000_000_000:
+        return 1_000_000_000, "B", 3
+    elif largest >= 1_000_000:
+        return 1_000_000, "M", 3
+    elif largest >= 1_000:
+        return 1_000, "K", 3
+    return 1, "", 0
 
 
-def _format_token_value(
-    value: int,
-    unit: tuple[int, str],
+def _format_rounded_token_value(
+    rounded: int,
+    unit: tuple[int, str, int],
     language: str,
     *,
-    suffix: bool = True,
+    suffix: bool,
 ) -> str:
-    divisor, label = unit
-    if divisor == 1:
-        formatted = f"{value:,}"
+    _, label, precision = unit
+    if precision == 0:
+        formatted = f"{rounded:,}"
     else:
-        formatted = f"{value / divisor:,.3f}"
+        scale = 10**precision
+        whole, fraction = divmod(rounded, scale)
+        formatted = f"{whole:,}.{fraction:0{precision}d}"
     if language == "ru":
         formatted = formatted.replace(",", "\u00a0").replace(".", ",")
     if not suffix:
         return formatted
     if language == "ru":
-        label = {"K": " тыс.", "M": " млн", "B": " млрд"}.get(label, "")
+        label = {
+            "K": " тыс.",
+            "M": " млн",
+            "B": " млрд",
+            "T": " трлн",
+        }.get(label, "")
     return formatted + label
 
 
-def _token_unit_description(unit: tuple[int, str], language: str) -> str:
+def _format_token_value(
+    value: int,
+    unit: tuple[int, str, int],
+    language: str,
+    *,
+    suffix: bool = True,
+) -> str:
+    divisor, _, precision = unit
+    rounded = _rounded_token_value(value, divisor, precision)
+    return _format_rounded_token_value(
+        rounded, unit, language, suffix=suffix
+    )
+
+
+def _format_token_total(
+    overview: dict[str, Any],
+    field: str,
+    unit: tuple[int, str, int],
+    language: str,
+    *,
+    suffix: bool = True,
+) -> str:
+    divisor, _, precision = unit
+    rounded = sum(
+        _rounded_token_value(row["stats"][field], divisor, precision)
+        for row in overview["rows"]
+        if row["stats"]["available"]
+    )
+    return _format_rounded_token_value(
+        rounded, unit, language, suffix=suffix
+    )
+
+
+def _token_unit_description(unit: tuple[int, str, int], language: str) -> str:
     label = unit[1]
     descriptions = {
         "K": ("thousands of tokens (K)", "тысячи токенов (тыс.)"),
         "M": ("millions of tokens (M)", "миллионы токенов (млн)"),
         "B": ("billions of tokens (B)", "миллиарды токенов (млрд)"),
+        "T": ("trillions of tokens (T)", "триллионы токенов (трлн)"),
     }
     return _pick(language, *descriptions.get(label, ("tokens", "токены")))
 
@@ -274,7 +322,7 @@ def _token_age(moment: dt.datetime | None, language: str) -> str:
 def _token_usage_block(
     account: dict[str, Any],
     language: str,
-    unit: tuple[int, str],
+    unit: tuple[int, str, int],
 ) -> list[str]:
     stats = token_usage_stats(account)
     if not stats["available"]:
@@ -353,7 +401,7 @@ def _account_block(
     *,
     active: bool,
     language: str,
-    token_unit: tuple[int, str],
+    token_unit: tuple[int, str, int],
 ) -> str:
     marker = "●" if active else "○"
     if account.get("last_error") == "login required":
@@ -1542,14 +1590,16 @@ class TelegramBot:
                     f"<b>{_pick(language, 'Total · available accounts', 'Итого · доступные аккаунты')}</b>"
                     + f": {overview['available']}/{overview['total']}",
                     _pick(language, "Last 7 days", "Последние 7 дней")
-                    + f": <b>{_format_token_value(overview['seven_days'], token_unit, language)}</b>",
+                    + f": ≈ <b>{_format_token_total(overview, 'seven_days', token_unit, language)}</b>",
                     _pick(language, "Last 30 days", "Последние 30 дней")
-                    + f": <b>{_format_token_value(overview['thirty_days'], token_unit, language)}</b>",
+                    + f": ≈ <b>{_format_token_total(overview, 'thirty_days', token_unit, language)}</b>",
                     _pick(language, "All time", "За всё время")
-                    + f": <b>{_format_token_value(overview['lifetime'], token_unit, language)}</b>",
+                    + f": ≈ <b>{_format_token_total(overview, 'lifetime', token_unit, language)}</b>",
                     "",
                     f"<b>{_pick(language, 'By session · 7d / 30d / all time', 'По сессиям · 7 д. / 30 д. / всё время')}</b>",
-                    _pick(language, "Unit", "Единица") + f": {unit_label}",
+                    _pick(language, "Unit", "Единица")
+                    + f": {unit_label} · "
+                    + _pick(language, "rounded", "округлено"),
                 ]
             )
             for row in overview["rows"]:
@@ -1580,10 +1630,15 @@ class TelegramBot:
                 [
                     "",
                     (
-                        f"<b>Σ {_pick(language, 'Total', 'Итого')}</b> · "
-                        f"{_format_token_value(overview['seven_days'], token_unit, language, suffix=False)} / "
-                        f"{_format_token_value(overview['thirty_days'], token_unit, language, suffix=False)} / "
-                        f"{_format_token_value(overview['lifetime'], token_unit, language, suffix=False)}"
+                        f"<b>Σ {_pick(language, 'Total', 'Итого')} ≈</b> · "
+                        f"{_format_token_total(overview, 'seven_days', token_unit, language, suffix=False)} / "
+                        f"{_format_token_total(overview, 'thirty_days', token_unit, language, suffix=False)} / "
+                        f"{_format_token_total(overview, 'lifetime', token_unit, language, suffix=False)}"
+                    ),
+                    _pick(
+                        language,
+                        "<i>Σ adds the rounded rows shown above.</i>",
+                        "<i>Σ складывает показанные выше округлённые строки.</i>",
                     ),
                 ]
             )
@@ -1803,10 +1858,10 @@ class TelegramBot:
                         + _pick(language, "Token activity", "Активность токенов")
                         + f" · {overview['available']}/{overview['total']} "
                         + _pick(language, "accounts", "аккаунтов"),
-                        _pick(language, "Last 7 days", "Последние 7 дней")
-                        + f" <b>{_format_token_value(overview['seven_days'], token_unit, language)}</b>"
+                    _pick(language, "Last 7 days", "Последние 7 дней")
+                        + f" ≈ <b>{_format_token_total(overview, 'seven_days', token_unit, language)}</b>"
                         + _pick(language, " · last 30 days ", " · последние 30 дней ")
-                        + f"<b>{_format_token_value(overview['thirty_days'], token_unit, language)}</b>",
+                        + f"≈ <b>{_format_token_total(overview, 'thirty_days', token_unit, language)}</b>",
                     ]
                 )
             else:

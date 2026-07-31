@@ -112,9 +112,12 @@ obvious assignment.
 
 The Token activity view computes rolling 7-day, rolling 30-day, and lifetime
 totals from cached daily buckets. It shows the aggregate first and one compact
-comparison row per Session. Every value on the screen uses one shared unit, and
-an explicit `Σ Total` repeats the aggregate after the rows so displayed values
-can be checked directly. Missing Sessions are never silently treated as zero.
+comparison row per Session. Every value on the screen uses one natural shared
+unit: billion-scale totals use `B`, million-scale totals use `M`, and so on.
+Values are rounded to three decimals for display. The approximate `Σ Total`
+adds those displayed rounded rows, so visible arithmetic always remains
+checkable while raw registry calculations remain exact. Missing Sessions are
+never silently treated as zero.
 
 Each Session is one unique ChatGPT account. `account/usage/read` is account-wide
 and already includes every Codex app or device using that account, including

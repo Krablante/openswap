@@ -9,7 +9,7 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-compatible-111111)](https://opencode.ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-<img src="docs/images/telegram-menu-v5.png" alt="OpenSwap Telegram Session menu with account-wide token activity" width="420">
+<img src="docs/images/telegram-menu-v6.png" alt="OpenSwap Telegram Session menu with account-wide token activity in billions" width="420">
 
 </div>
 
@@ -140,9 +140,11 @@ host because it would only repeat the active/default state.
 The root also shows the combined rolling 7-day and 30-day token activity.
 `Token activity` opens a comparison screen with 7-day, 30-day, and lifetime
 totals across all available Sessions and the same three values for every
-Session. The screen uses one shared unit and repeats an explicit `Σ Total`, so
-the displayed rows can be added directly. Missing Sessions remain visible and
-partial totals are labeled with the available account count.
+Session. The screen uses one natural shared unit (`B` for billion-scale totals)
+and repeats an explicit approximate `Σ Total`, so the displayed rounded rows
+can be added directly. Missing Sessions remain visible and partial totals are
+labeled with the available account count. Raw calculations remain exact; `≈`
+marks the compact presentation.
 
 The source is account-wide: each Session represents one ChatGPT account, and
 its values already include every Codex app or device using that account,
@@ -160,7 +162,7 @@ remaining allowance, or host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.1.1
+OpenSwap 2.1.2
 
 ✓ 🔐 OpenCode · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
