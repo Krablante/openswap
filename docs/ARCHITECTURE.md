@@ -63,6 +63,12 @@ account. The live OpenCode `auth.json` and remote target files are published
 views. Only their `openai` entry may be replaced; unrelated providers survive
 unchanged.
 
+Telegram can export a healthy Session in either canonical Codex CLI shape or a
+standalone OpenCode/OpenCodez document containing only the `openai` entry. The
+Session is verified and refreshed through the normal Codex path first. Export
+serialization and Telegram multipart upload stay in memory; no export file is
+written to storage.
+
 On POSIX systems, state directories are `0700` and credential/config files are
 `0600`. Windows relies on the current user's directory ACL because POSIX mode
 bits do not express Windows access control.
@@ -287,6 +293,7 @@ Telegram menu and login state.
 The important failure rules are:
 
 - malformed or oversized credential documents are rejected;
+- exports require an allowlisted private chat and an explicit format choice;
 - unknown provider entries are preserved;
 - account identity mismatch never changes a slot;
 - a changed target is never overwritten blindly;

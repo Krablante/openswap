@@ -393,6 +393,31 @@ class OpenSwap:
             if not promoted:
                 shutil.rmtree(self._account_dir(account_uuid), ignore_errors=True)
 
+    def export_auth_document(
+        self, selector: str, export_format: str
+    ) -> dict[str, Any]:
+        if export_format not in {"codex", "opencode"}:
+            raise OpenSwapError("unsupported auth export format")
+        self.refresh(selector, include_limits=False)
+        with self.locked():
+            registry = self._load_registry()
+            account_uuid, _ = self._resolve_account(registry, selector)
+            codex_auth = self._canonical_uploaded_auth(
+                self._read_slot_auth(account_uuid)
+            )
+        if export_format == "codex":
+            return codex_auth
+        tokens = codex_auth["tokens"]
+        return {
+            "openai": {
+                "type": "oauth",
+                "refresh": tokens["refresh_token"],
+                "access": tokens["access_token"],
+                "expires": token_expiry_ms(tokens["access_token"]),
+                "accountId": tokens["account_id"],
+            }
+        }
+
     def add_account(self, *, browser: bool = False) -> dict[str, Any]:
         account_uuid = str(uuid.uuid4())
         codex_home = self._codex_home(account_uuid)

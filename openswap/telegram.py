@@ -1079,6 +1079,48 @@ class TelegramBot:
                     message_id=message_id,
                     view_account=None,
                 )
+            elif data.startswith("export:"):
+                account_id = data.removeprefix("export:")
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    view_account=f"__export__:{account_id}",
+                )
+            elif data.startswith("export-codex:"):
+                account_id = data.removeprefix("export-codex:")
+                auth_document = self.openswap.export_auth_document(account_id, "codex")
+                self._send_auth_document(chat_id, auth_document, "Codex CLI")
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    notice=_pick(
+                        language,
+                        "Codex auth.json exported",
+                        "auth.json для Codex экспортирован",
+                    ),
+                    view_account=account_id,
+                )
+            elif data.startswith("export-opencode:"):
+                account_id = data.removeprefix("export-opencode:")
+                auth_document = self.openswap.export_auth_document(
+                    account_id, "opencode"
+                )
+                self._send_auth_document(
+                    chat_id, auth_document, "OpenCode / OpenCodez"
+                )
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    notice=_pick(
+                        language,
+                        "OpenCode auth.json exported",
+                        "auth.json для OpenCode экспортирован",
+                    ),
+                    view_account=account_id,
+                )
             elif data == "login-device":
                 self._start_login(chat_id, user_id, message_id, "device")
             elif data == "login-browser":
@@ -1482,6 +1524,15 @@ class TelegramBot:
                 if not special_view:
                     view_account = "__hosts__"
                     special_view = True
+            if isinstance(view_account, str) and view_account.startswith("__export__:"):
+                account_id = view_account.removeprefix("__export__:")
+                special_view = any(
+                    account.get("id") == account_id
+                    and not account.get("last_error")
+                    for account in accounts
+                )
+                if not special_view:
+                    view_account = None
             if view_account and not special_view and not any(
                 account["id"] == view_account for account in accounts
             ):
@@ -1588,10 +1639,17 @@ class TelegramBot:
         token_overview = token_usage_overview(accounts)
         token_unit = _token_unit(token_overview)
         host_target = None
+        export_account = None
         if isinstance(view_account, str) and view_account.startswith("__host__:"):
             host_name = view_account.removeprefix("__host__:")
             host_target = next(
                 (target for target in sync["targets"] if target["name"] == host_name),
+                None,
+            )
+        if isinstance(view_account, str) and view_account.startswith("__export__:"):
+            account_id = view_account.removeprefix("__export__:")
+            export_account = next(
+                (account for account in accounts if account["id"] == account_id),
                 None,
             )
         if view_account == "__language__":
@@ -1607,6 +1665,11 @@ class TelegramBot:
             lines = [f"🌐 <b>OpenSwap</b> · {_pick(language, 'hosts', 'хосты')}"]
         elif host_target is not None:
             lines = [f"🖥 <b>OpenSwap</b> · {_pick(language, 'assignment', 'назначение')}"]
+        elif export_account is not None:
+            lines = [
+                f"📤 <b>OpenSwap</b> · "
+                + _pick(language, "export auth.json", "экспорт auth.json")
+            ]
         elif pending_login or login_choice or import_prompt:
             lines = [f"➕ <b>OpenSwap</b> · {_pick(language, 'add session', 'добавить сессию')}"]
         elif selected:
@@ -1854,6 +1917,24 @@ class TelegramBot:
                     + ", ".join(html.escape(name) for name in unavailable)
                 )
             lines.append("")
+        elif export_account is not None:
+            lines.extend(
+                [
+                    f"👤 <b>{html.escape(account_name(export_account))}</b>",
+                    "",
+                    _pick(
+                        language,
+                        "Choose the application format. The exported file grants access to this ChatGPT Session.",
+                        "Выберите формат приложения. Экспортированный файл даёт доступ к этой ChatGPT-сессии.",
+                    ),
+                    _pick(
+                        language,
+                        "Treat it like a password and delete the Telegram message after use.",
+                        "Обращайтесь с ним как с паролем и удалите сообщение Telegram после использования.",
+                    ),
+                    "",
+                ]
+            )
         elif pending_login:
             remaining = max(
                 0, round((pending_login.expires_monotonic - time.monotonic()) / 60)
@@ -2141,6 +2222,26 @@ class TelegramBot:
                 )
             keyboard.append([{"text": _pick(language, "← Hosts", "← Хосты"), "callback_data": "hosts"}])
             return keyboard
+        if isinstance(view_account, str) and view_account.startswith("__export__:"):
+            account_id = view_account.removeprefix("__export__:")
+            return [
+                [
+                    {
+                        "text": "Codex CLI",
+                        "callback_data": f"export-codex:{account_id}",
+                    },
+                    {
+                        "text": "OpenCode / OpenCodez",
+                        "callback_data": f"export-opencode:{account_id}",
+                    },
+                ],
+                [
+                    {
+                        "text": _pick(language, "← Session", "← Сессия"),
+                        "callback_data": f"open:{account_id}",
+                    }
+                ],
+            ]
         if pending_login:
             prompt = pending_login.session.prompt
             login_url = (
@@ -2225,6 +2326,18 @@ class TelegramBot:
                         {
                             "text": _pick(language, "↻ Refresh", "↻ Обновить"),
                             "callback_data": f"refresh:{selected['id']}",
+                        }
+                    ]
+                )
+                keyboard.append(
+                    [
+                        {
+                            "text": _pick(
+                                language,
+                                "📤 Export auth.json",
+                                "📤 Экспорт auth.json",
+                            ),
+                            "callback_data": f"export:{selected['id']}",
                         }
                     ]
                 )
@@ -2365,6 +2478,61 @@ class TelegramBot:
                 "disable_web_page_preview": True,
             },
         )
+
+    def _send_auth_document(
+        self, chat_id: int, document: dict[str, Any], format_name: str
+    ) -> None:
+        content = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode(
+            "utf-8"
+        )
+        boundary = f"openswap-{uuid.uuid4().hex}"
+        fields = [
+            ("chat_id", str(chat_id)),
+            ("caption", f"{format_name} auth.json · treat as a password"),
+        ]
+        body = bytearray()
+        for name, value in fields:
+            body.extend(f"--{boundary}\r\n".encode("ascii"))
+            body.extend(
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(
+                    "ascii"
+                )
+            )
+            body.extend(value.encode("utf-8"))
+            body.extend(b"\r\n")
+        body.extend(f"--{boundary}\r\n".encode("ascii"))
+        body.extend(
+            b'Content-Disposition: form-data; name="document"; filename="auth.json"\r\n'
+        )
+        body.extend(b"Content-Type: application/json\r\n\r\n")
+        body.extend(content)
+        body.extend(f"\r\n--{boundary}--\r\n".encode("ascii"))
+        request = urllib.request.Request(
+            self.base_url + "sendDocument",
+            data=bytes(body),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                result = json.load(response)
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read()).get(
+                    "description", f"HTTP {exc.code}"
+                )
+            except (ValueError, json.JSONDecodeError):
+                detail = f"HTTP {exc.code}"
+            raise TelegramError(str(detail)) from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise TelegramError("network error") from None
+        if not isinstance(result, dict) or not result.get("ok"):
+            detail = (
+                result.get("description", "API error")
+                if isinstance(result, dict)
+                else "API error"
+            )
+            raise TelegramError(str(detail))
 
     def _download_file(self, file_id: str, language: str) -> bytes:
         result = self._call("getFile", {"file_id": file_id})

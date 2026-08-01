@@ -38,6 +38,7 @@ That means every capability lives in one place:
 
 - add a Session with official Codex device-code or browser OAuth;
 - import an existing Codex CLI, OpenCode, or OpenCodez `auth.json`;
+- export a Session as Codex CLI or OpenCode/OpenCodez `auth.json`;
 - inspect plan, allowance, reset times, token history, and login health;
 - refresh or reauthorize a Session;
 - select the default Session;
@@ -168,7 +169,7 @@ remaining allowance, or host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.2.1
+OpenSwap 2.3.0
 
 ✓ 🔐 OpenCode · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
@@ -263,8 +264,10 @@ unknown providers, uses atomic writes, and refuses a remote update when the file
 changed during publication.
 
 Telegram accepts commands only from configured numeric user IDs in private
-chats. Unauthorized updates receive no response. The bot cannot export tokens,
-run arbitrary commands, or read arbitrary paths.
+chats. Unauthorized updates receive no response. A Session export is available
+only from its detail screen, requires an explicit format choice, and sends the
+credential document directly from memory. The bot cannot run arbitrary commands
+or read arbitrary paths.
 
 Stop the process before backing up or restoring `data/`. The live OpenCode
 `auth.json` is a published view; the isolated Session slots are canonical.

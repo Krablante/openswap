@@ -33,10 +33,15 @@ Unauthorized updates receive no response.
 changes only a sparse per-user language preference. Every operational action is
 an inline callback tied to the allowlisted private chat.
 
-The bot cannot export tokens, execute arbitrary commands, or read arbitrary
-paths. Imported documents are bounded to 1 MiB, read in memory, restricted to
-accepted Codex/OpenCode shapes, and deleted from Telegram after processing.
-OAuth callback messages are deleted immediately.
+The bot can export one selected healthy Session only after an explicit format
+choice in its detail screen. Export is restricted to the same allowlisted
+private-chat boundary, verifies and refreshes the Session first, serializes only
+the compatible ChatGPT OAuth fields, and uploads directly from memory without a
+temporary file. Exported Telegram documents are not deleted automatically and
+must be removed by the operator after use. The bot cannot execute arbitrary
+commands or read arbitrary paths. Imported documents are bounded to 1 MiB, read
+in memory, restricted to accepted Codex/OpenCode shapes, and deleted from
+Telegram after processing. OAuth callback messages are deleted immediately.
 
 ## Configuration
 
@@ -54,10 +59,12 @@ configuration, state directory, uploaded credential document, or backup.
 
 ## Credential storage
 
-Raw access and refresh tokens exist only in canonical Session slots and
-published OpenCode-compatible `openai` entries. Registry fingerprints are
-one-way SHA-256 values used to detect identity and external changes. Logs and
-Telegram output never include tokens or ChatGPT account IDs.
+At rest under OpenSwap's control, raw access and refresh tokens exist only in
+canonical Session slots and published OpenCode-compatible `openai` entries.
+User-requested export documents also persist in Telegram until the operator
+deletes their messages. Registry fingerprints are one-way SHA-256 values used
+to detect identity and external changes. Logs and ordinary Telegram text never
+include tokens or ChatGPT account IDs.
 
 Background usage failures are isolated per Session. The registry retains only a
 bounded, whitespace-normalized diagnostic, failure count, timestamp, and refresh

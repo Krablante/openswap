@@ -136,6 +136,7 @@ The bot supports:
 
 - official Codex device-code and browser login;
 - bounded `auth.json` upload;
+- Codex CLI and OpenCode/OpenCodez `auth.json` export for a healthy Session;
 - Session refresh and reauthorization;
 - default Session selection;
 - per-host assignment and return to default;
@@ -153,6 +154,12 @@ directories are preserved.
 The System button is always on the root screen. With several hosts it is on the
 left and Hosts is on the right of the same row. In single-host mode System
 occupies the whole row.
+
+To transfer a Session, open its detail screen, select `Export auth.json`, then
+choose `Codex CLI` or `OpenCode / OpenCodez`. OpenSwap verifies and refreshes the
+Session before sending the document. The file grants account access: move it to
+the intended credential location, restrict its permissions, and delete the
+Telegram message after use.
 
 The screen reports OpenCode validity, Codex availability, storage integrity,
 healthy Sessions, and target convergence. `Retry sync` wakes the scheduler and
