@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .codex import CodexError, CodexLoginSession
@@ -411,6 +412,19 @@ def _limit_status_short(account: dict[str, Any], language: str) -> str:
         return label
     if status.get("unlimited") is True:
         return _pick(language, "unlimited", "без лимита")
+    individual = status.get("individual_limit")
+    if isinstance(individual, dict):
+        remaining = individual.get("remaining_percent")
+        reset_at = individual.get("reset_at")
+        if isinstance(remaining, int):
+            label = _pick(
+                language,
+                f"{remaining}% credits",
+                f"{remaining}% кредитов",
+            )
+            if isinstance(reset_at, (int, float)):
+                label += f" · {_reset_short(reset_at, language)}"
+            return label
     plan = account.get("plan")
     if isinstance(plan, str) and plan:
         return _pick(
@@ -419,6 +433,20 @@ def _limit_status_short(account: dict[str, Any], language: str) -> str:
             f"{plan} · окно лимита недоступно",
         )
     return _pick(language, "allowance unavailable", "лимит недоступен")
+
+
+def _format_credit_amount(value: str, language: str) -> str:
+    try:
+        amount = Decimal(value)
+    except InvalidOperation:
+        return html.escape(value)
+    if amount == amount.to_integral():
+        formatted = f"{int(amount):,}"
+    else:
+        formatted = f"{amount:,.2f}".rstrip("0").rstrip(".")
+    if language == "ru":
+        formatted = formatted.replace(",", "\u00a0").replace(".", ",")
+    return formatted
 
 
 def _account_block(
@@ -476,6 +504,35 @@ def _account_block(
                     "   📊 Безлимитный workspace",
                 )
             )
+        elif isinstance(status.get("individual_limit"), dict):
+            individual = status["individual_limit"]
+            remaining = individual.get("remaining_percent")
+            reset_at = individual.get("reset_at")
+            used = individual.get("used")
+            limit = individual.get("limit")
+            lines.append(
+                _pick(
+                    language,
+                    "   📊 Monthly credit limit",
+                    "   📊 Месячный лимит кредитов",
+                )
+            )
+            if isinstance(remaining, int):
+                lines.append(
+                    _pick(language, "      Remaining", "      Осталось")
+                    + f": <b>{remaining}%</b>"
+                )
+            if isinstance(used, str) and isinstance(limit, str):
+                lines.append(
+                    f"      <b>{_format_credit_amount(used, language)}</b> / "
+                    f"<b>{_format_credit_amount(limit, language)}</b> "
+                    + _pick(language, "credits used", "кредитов использовано")
+                )
+            if isinstance(reset_at, (int, float)):
+                lines.append(
+                    _pick(language, "      Resets ", "      Сброс ")
+                    + f"<b>{_reset_time(reset_at, language)}</b>"
+                )
         else:
             lines.append(
                 _pick(
@@ -500,9 +557,12 @@ def _account_block(
             )
 
     resets = _reset_count(account)
-    lines.append(
-        f"   ⚡ {_pick(language, 'Earned resets', 'Доступно reset')}: <b>{resets}</b>"
-    )
+    if resets or not isinstance(
+        _limit_status(account).get("individual_limit"), dict
+    ):
+        lines.append(
+            f"   ⚡ {_pick(language, 'Earned resets', 'Доступно reset')}: <b>{resets}</b>"
+        )
     checked = parse_time(account.get("limits_checked_at"))
     if checked:
         age = max(0, round((dt.datetime.now(dt.UTC) - checked).total_seconds() / 60))

@@ -180,10 +180,11 @@ Per-Session refresh failures are retained as safe metadata and surfaced as
 stale usage in Telegram System and Session views.
 
 The allowance response is also normalized into a small `limit_status` object.
-This preserves managed-workspace spend-control exhaustion, its reset time, and
-explicit unlimited state even when the backend returns `rate_limit=null`.
-Successful refresh replaces the old rate-limit snapshot, so a null window cannot
-leave stale percentages visible.
+This preserves managed-workspace spend-control exhaustion, explicit unlimited
+state, and `individual_limit` even when the backend returns `rate_limit=null`.
+The latter contains monthly credit limit, credits used, remaining percentage,
+and reset time. Successful refresh replaces the old rate-limit snapshot, so a
+null window cannot leave stale percentages visible.
 
 Token history has an independent fixed 30-minute cache window and a two-hour
 stale threshold. The scheduler checks due state cheaply on every normal tick,

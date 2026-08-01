@@ -448,10 +448,38 @@ class CodexClient:
             if isinstance(spend_control, dict)
             else False
         )
+        individual_raw = (
+            spend_control.get("individual_limit")
+            if isinstance(spend_control, dict)
+            else None
+        )
+        individual_limit = None
+        if isinstance(individual_raw, dict):
+            limit = individual_raw.get("limit")
+            used = individual_raw.get("used")
+            remaining_percent = individual_raw.get("remaining_percent")
+            individual_reset_at = individual_raw.get("reset_at")
+            if (
+                isinstance(limit, str)
+                and isinstance(used, str)
+                and isinstance(remaining_percent, int)
+                and not isinstance(remaining_percent, bool)
+                and isinstance(individual_reset_at, int)
+                and not isinstance(individual_reset_at, bool)
+                and individual_reset_at > 0
+            ):
+                individual_limit = {
+                    "limit": limit,
+                    "used": used,
+                    "remaining_percent": max(0, min(100, remaining_percent)),
+                    "reset_at": individual_reset_at,
+                }
         upsell = raw.get("rate_limit_upsell")
         reset_at = upsell.get("reset_at") if isinstance(upsell, dict) else None
         if not isinstance(reset_at, int) or isinstance(reset_at, bool) or reset_at <= 0:
             reset_at = None
+        if reset_at is None and individual_limit is not None:
+            reset_at = individual_limit["reset_at"]
         credits = raw.get("credits")
         unlimited = (
             credits.get("unlimited") is True if isinstance(credits, dict) else False
@@ -461,6 +489,7 @@ class CodexClient:
             "reason": reached_type,
             "reset_at": reset_at,
             "unlimited": unlimited,
+            "individual_limit": individual_limit,
         }
 
     def account_usage(self, codex_home: Path) -> dict[str, Any]:

@@ -274,13 +274,15 @@ its account history and remains outside the available-account total until
 reauthorized. A transient Codex error keeps the previous token cache visible
 with a stale marker and is retried after the independent 30-minute cache window.
 
-### Managed workspace shows no percentage
+### Managed workspace uses monthly credits
 
-Business workspaces can return `rate_limit=null` when workspace spend control is
-reached. OpenSwap shows `Workspace limit reached` and the backend reset time;
-this is a healthy authenticated Session, not missing data. If neither a rate
-window nor an explicit workspace state is available, Telegram says `Allowance
-window is unavailable` instead of inventing a percentage.
+Business workspaces can return `rate_limit=null` while exposing
+`spend_control.individual_limit`. OpenSwap shows remaining monthly-credit
+percentage, credits used versus limit, and the backend reset time. When the
+credit limit is exhausted it shows `Workspace limit reached`; this remains a
+healthy authenticated Session, not missing data. If neither a rate window nor
+an explicit workspace state is available, Telegram says `Allowance window is
+unavailable` instead of inventing a percentage.
 
 ### Managed-workspace sign-in fails
 

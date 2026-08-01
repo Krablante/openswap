@@ -9,7 +9,7 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-compatible-111111)](https://opencode.ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-<img src="docs/images/telegram-menu-v7.png" alt="OpenSwap Telegram Session menu with compact numbering and managed workspace status" width="420">
+<img src="docs/images/telegram-menu-v8.png" alt="OpenSwap Telegram Session menu with monthly workspace credits" width="420">
 
 </div>
 
@@ -168,7 +168,7 @@ remaining allowance, or host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.2.0
+OpenSwap 2.2.1
 
 ✓ 🔐 OpenCode · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
@@ -190,11 +190,12 @@ Session whose snapshot is due. OAuth refresh no longer suppresses usage refresh,
 and a failure in one Session cannot block another Session or the Telegram menu.
 Stale data is marked directly in the Session row and in System.
 
-Managed Business workspaces can return no ordinary rate-limit window while a
-workspace spend control is active. OpenSwap preserves that status separately:
-instead of `no data`, Telegram shows `Workspace limit reached` and the backend
-reset time. Other explicit states include unlimited workspace allowance and an
-unavailable allowance window.
+Managed Business workspaces can return no ordinary rate-limit window because
+they use monthly workspace credits instead. OpenSwap reads the official
+`spend_control.individual_limit`: Telegram shows remaining percentage, credits
+used versus limit, and monthly reset time. When exhausted it shows `Workspace
+limit reached`; other explicit states include unlimited workspace allowance and
+a genuinely unavailable allowance window.
 
 For managed-workspace sign-in, Device Code may require an administrator to
 enable device-code authentication. Browser sign-in supports SSO but still
