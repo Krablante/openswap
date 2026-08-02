@@ -116,11 +116,12 @@ The root contains Session rows, a compact combined token summary, `Add`,
 - single-host: `System` occupies the full final row.
 
 Session buttons contain only Session identity, usage/reset countdown, stale
-state, and earned reset credits. Routing counts belong to a separate
-`Host assignments` text block, rendered only when both the Session count and
-host count exceed one. Dead assigned Sessions remain visible there. A one-
-Session or one-host deployment suppresses the block rather than repeating an
-obvious assignment.
+state, and earned reset credits. The `Hosts → host` picker reuses the same
+compact button labels, appending `· default` to the Session inherited from the
+default. Routing counts belong to a separate `Host assignments` text block,
+rendered only when both the Session count and host count exceed one. Dead
+assigned Sessions remain visible there. A one-Session or one-host deployment
+suppresses the block rather than repeating an obvious assignment.
 
 The Token activity view computes rolling 7-day, rolling 30-day, and lifetime
 totals from cached daily buckets. It shows the aggregate first and one compact

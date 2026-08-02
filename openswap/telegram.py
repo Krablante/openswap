@@ -2205,7 +2205,6 @@ class TelegramBot:
                     continue
                 is_selected = account["id"] == target.get("account_id")
                 is_default = account["id"] == sync.get("default_account")
-                marker = "✓ " if is_selected else ""
                 suffix = _pick(language, " · default", " · по умолчанию") if is_default else ""
                 callback = (
                     f"host-default:{target_name}"
@@ -2215,7 +2214,14 @@ class TelegramBot:
                 keyboard.append(
                     [
                         {
-                            "text": f"{marker}{account_name(account)}{suffix}",
+                            "text": (
+                                _root_label(
+                                    account,
+                                    active=is_selected,
+                                    language=language,
+                                )
+                                + suffix
+                            ),
                             "callback_data": callback,
                         }
                     ]

@@ -132,6 +132,11 @@ deployment, the root text contains a `Host assignments` block listing only
 Sessions with one or more assigned hosts. The block is intentionally absent for
 one Session or one host.
 
+The per-host Session picker (`Hosts → host`) shows the same compact usage
+buttons as the root menu; the Session currently in effect for that host is
+marked active, and the Session inherited from the default carries a
+`· default` suffix.
+
 The bot supports:
 
 - official Codex device-code and browser login;
