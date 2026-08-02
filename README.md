@@ -9,8 +9,6 @@
 [![OpenCode](https://img.shields.io/badge/OpenCode-compatible-111111)](https://opencode.ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-<img src="docs/images/telegram-menu-v8.png" alt="OpenSwap Telegram Session menu with monthly workspace credits" width="420">
-
 </div>
 
 OpenCode normally has one active OpenAI login. That becomes awkward when you
