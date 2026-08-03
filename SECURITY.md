@@ -7,14 +7,16 @@ Security fixes are applied to the latest release and the `main` branch.
 ## Trust model
 
 OpenSwap runs with the same operating-system identity that owns the managed
-OpenCode credential file. Anyone who can read OpenSwap's configuration or state
-can obtain live credentials and must be treated as a trusted local operator.
+OpenCode and optional Codex credential files. Anyone who can read OpenSwap's
+configuration or state can obtain live credentials and must be treated as a
+trusted local operator.
 
 The trusted boundary includes:
 
 - `config.toml`, which contains the Telegram bot token and allowlist;
 - the configured storage directory and Session slots;
 - the configured OpenCode `auth.json`;
+- the optional configured Codex CLI `auth.json`;
 - the official Codex executable;
 - SSH keys and remote accounts used for optional multihost sync;
 - the operating-system account running OpenSwap.
@@ -60,7 +62,8 @@ configuration, state directory, uploaded credential document, or backup.
 ## Credential storage
 
 At rest under OpenSwap's control, raw access and refresh tokens exist only in
-canonical Session slots and published OpenCode-compatible `openai` entries.
+canonical Session slots and published OpenCode-compatible `openai` entries or
+Codex CLI credential fields.
 User-requested export documents also persist in Telegram until the operator
 deletes their messages. Registry fingerprints are one-way SHA-256 values used
 to detect identity and external changes. Logs and ordinary Telegram text never
@@ -86,8 +89,9 @@ Directory metadata is flushed where supported.
 Windows sharing violations receive a short fixed retry. The retry is bounded
 and never becomes a background loop.
 
-Other provider entries in `auth.json` are preserved. OpenSwap owns only the
-OpenAI entry it manages.
+Other provider entries in OpenCode `auth.json` are preserved. In Codex
+`auth.json`, OpenSwap owns only `auth_mode`, `OPENAI_API_KEY`, `tokens`, and
+`last_refresh`; unknown top-level fields are preserved.
 
 ## Session identity
 
@@ -99,7 +103,8 @@ Reauthorization is tied to the existing Session fingerprint. Signing into a
 different ChatGPT account cannot silently replace an assigned Session. Failed
 or cancelled reauthorization restores the previous credential document.
 
-A Session cannot be removed while it is the default or assigned to a host.
+A Session cannot be removed while it is a default or assigned to a host in
+either workspace.
 
 ## Codex boundary
 
@@ -116,10 +121,10 @@ SSH destinations and remote Python commands are restricted to conservative
 ASCII forms. OpenSwap invokes SSH without a shell-generated path or credential
 argument; a bounded Python program is sent through stdin.
 
-Remote publication enforces the same document size, JSON validation,
-compare-and-swap, flush, atomic replacement, and platform-specific permission
-rules as local publication. A target that changes concurrently is retried later
-and never overwritten blindly.
+Remote publication enforces the same target-specific merge, document size, JSON
+validation, compare-and-swap, flush, atomic replacement, and platform-specific
+permission rules as local publication. A target that changes concurrently is
+retried later and never overwritten blindly.
 
 Use dedicated SSH keys with the minimum necessary host and file permissions.
 OpenSwap does not manage keys, agents, host trust, or privilege escalation.

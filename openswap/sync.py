@@ -28,6 +28,8 @@ class SyncTarget:
     path: Path | str
     ssh: str | None = None
     python: str = "python3"
+    kind: str = "opencode"
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,10 +77,21 @@ def read_target(config: SyncConfig, target: SyncTarget) -> TargetSnapshot:
 def write_target(
     config: SyncConfig,
     snapshot: TargetSnapshot,
-    openai_entry: dict[str, Any],
+    credentials: dict[str, Any],
 ) -> str:
     document = dict(snapshot.document)
-    document["openai"] = openai_entry
+    if snapshot.target.kind == "opencode":
+        document["openai"] = credentials
+    elif snapshot.target.kind == "codex":
+        required = ("auth_mode", "OPENAI_API_KEY", "tokens", "last_refresh")
+        if any(name not in credentials for name in required):
+            raise SyncError(
+                f"Codex credentials for {snapshot.target.name} are incomplete"
+            )
+        for name in required:
+            document[name] = credentials[name]
+    else:
+        raise SyncError(f"unsupported target kind: {snapshot.target.kind}")
     payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode()
     if len(payload) > MAX_AUTH_BYTES:
         raise SyncError(f"merged auth document for {snapshot.target.name} exceeds 1 MiB")

@@ -107,17 +107,17 @@ def _system_issue_label(language: str, issue: str) -> str:
             "Codex is unavailable or unsupported",
             "Codex недоступен или не поддерживается",
         ),
-        "opencode_missing": (
-            "OpenCode auth.json is missing",
-            "auth.json OpenCode не найден",
+        "client_missing": (
+            "Active client auth.json is missing",
+            "auth.json активного клиента не найден",
         ),
-        "opencode_invalid": (
-            "OpenCode auth.json is invalid",
-            "auth.json OpenCode повреждён",
+        "client_invalid": (
+            "Active client auth.json is invalid",
+            "auth.json активного клиента повреждён",
         ),
-        "opencode_permissions": (
-            "OpenCode auth.json permissions are unsafe",
-            "Небезопасные права auth.json OpenCode",
+        "client_permissions": (
+            "Active client auth.json permissions are unsafe",
+            "Небезопасные права auth.json активного клиента",
         ),
         "sessions_require_login": (
             "One or more Sessions require login",
@@ -650,6 +650,9 @@ class TelegramBot:
                 view_account = menu.get("view_account")
                 if not isinstance(view_account, str):
                     view_account = None
+                space = menu.get("space", "opencode")
+                if space not in {"opencode", "codex"}:
+                    space = "opencode"
             except (KeyError, TypeError, ValueError):
                 continue
             if user_id not in self.settings.allowed_users:
@@ -662,6 +665,7 @@ class TelegramBot:
                     notice=notice,
                     allow_new=False,
                     view_account=view_account,
+                    space=space,
                 )
             except TelegramError as exc:
                 detail = str(exc).lower()
@@ -702,6 +706,7 @@ class TelegramBot:
                 user_id,
                 allow_new=True,
                 view_account=None,
+                space="opencode",
                 force_new=True,
             )
 
@@ -893,6 +898,14 @@ class TelegramBot:
         chat_id = int(chat["id"])
         user_id = int(sender["id"])
         language = self.openswap.telegram_language(user_id)
+        stored_menu = self.openswap.telegram_menus().get(str(chat_id), {})
+        space = (
+            stored_menu.get("space", "opencode")
+            if isinstance(stored_menu, dict)
+            else "opencode"
+        )
+        if space not in {"opencode", "codex"} or not self.openswap.space_enabled(space):
+            space = "opencode"
         self._answer(callback_id)
 
         try:
@@ -903,6 +916,17 @@ class TelegramBot:
                     user_id,
                     message_id=message_id,
                     view_account=account_id,
+                )
+            elif data.startswith("space:"):
+                selected_space = data.removeprefix("space:")
+                if not self.openswap.space_enabled(selected_space):
+                    raise TelegramError("space is not configured")
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    view_account=None,
+                    space=selected_space,
                 )
             elif data == "back":
                 self.pending_resets.pop(chat_id, None)
@@ -974,7 +998,7 @@ class TelegramBot:
                     view_account="__system__",
                 )
             elif data == "hosts":
-                if self.openswap.sync_status().get("total", 0) <= 1:
+                if self.openswap.sync_status(space).get("total", 0) <= 1:
                     self._show_menu(
                         chat_id,
                         user_id,
@@ -1033,7 +1057,7 @@ class TelegramBot:
                     view_account="__hosts_reset__",
                 )
             elif data == "all-default-apply":
-                removed = self.openswap.clear_target_overrides()
+                removed = self.openswap.clear_target_overrides(space)
                 self._show_menu(
                     chat_id,
                     user_id,
@@ -1181,9 +1205,13 @@ class TelegramBot:
                     notice=_pick(language, "Switching…", "Переключаю…"),
                     view_account=account_id,
                 )
-                sync = self.openswap.sync_status()
+                sync = self.openswap.sync_status(space)
                 single_host = sync.get("enabled") and sync.get("total") == 1
-                account = self.openswap.use(account_id, all_targets=bool(single_host))
+                account = self.openswap.use(
+                    account_id,
+                    space=space,
+                    all_targets=bool(single_host),
+                )
                 notice = _pick(
                     language,
                     f"Active session: {account_name(account)}" if single_host else f"Default: {account_name(account)}",
@@ -1496,18 +1524,24 @@ class TelegramBot:
         notice: str | None = None,
         allow_new: bool = True,
         view_account: str | None = None,
+        space: str | None = None,
         force_new: bool = False,
     ) -> None:
         with self.menu_lock:
             stored = self.openswap.telegram_menus().get(str(chat_id))
+            if space is None:
+                stored_space = stored.get("space") if isinstance(stored, dict) else None
+                space = stored_space if stored_space in {"opencode", "codex"} else "opencode"
+            if not self.openswap.space_enabled(space):
+                space = "opencode"
             if force_new:
                 message_id = None
             elif message_id is None and isinstance(stored, dict):
                 candidate = stored.get("message_id")
                 if isinstance(candidate, int):
                     message_id = candidate
-            sync = self.openswap.sync_status()
-            accounts, active = self.openswap.accounts()
+            sync = self.openswap.sync_status(space)
+            accounts, active = self.openswap.accounts(space)
             language = self.openswap.telegram_language(user_id)
             special_view = view_account in {
                 "__hosts__",
@@ -1542,6 +1576,7 @@ class TelegramBot:
                 and stored.get("user_id") == user_id
                 and stored.get("message_id") == message_id
                 and stored.get("view_account") == view_account
+                and stored.get("space") == space
             )
             pending = self.pending_resets.get(chat_id)
             if pending and pending.expires_monotonic < time.monotonic():
@@ -1559,7 +1594,7 @@ class TelegramBot:
             login_choice = chat_id in self.login_choices
             import_prompt = chat_id in self.import_prompts
             system_status = (
-                self.openswap.system_status() if view_account == "__system__" else None
+                self.openswap.system_status(space) if view_account == "__system__" else None
             )
             text = self._menu_text(
                 accounts,
@@ -1572,6 +1607,7 @@ class TelegramBot:
                 sync,
                 language,
                 system_status,
+                space,
             )
             keyboard = self._menu_keyboard(
                 accounts,
@@ -1584,7 +1620,24 @@ class TelegramBot:
                 view_account,
                 sync,
                 language,
+                space,
             )
+            if (
+                view_account is None
+                and pending_login is None
+                and not login_choice
+                and not import_prompt
+                and self.openswap.space_enabled("codex")
+            ):
+                other = "codex" if space == "opencode" else "opencode"
+                keyboard.append(
+                    [
+                        {
+                            "text": "⇄ Codex" if other == "codex" else "⇄ OpenCode",
+                            "callback_data": f"space:{other}",
+                        }
+                    ]
+                )
             payload: dict[str, Any] = {
                 "chat_id": chat_id,
                 "text": text,
@@ -1598,7 +1651,7 @@ class TelegramBot:
                     self._call("editMessageText", payload)
                     if menu_changed:
                         self.openswap.set_telegram_menu(
-                            chat_id, user_id, message_id, view_account
+                            chat_id, user_id, message_id, view_account, space
                         )
                     return
                 except TelegramError as exc:
@@ -1614,7 +1667,7 @@ class TelegramBot:
             if not isinstance(result, dict) or not isinstance(result.get("message_id"), int):
                 raise TelegramError("sendMessage returned no message ID")
             self.openswap.set_telegram_menu(
-                chat_id, user_id, result["message_id"], view_account
+                chat_id, user_id, result["message_id"], view_account, space
             )
 
     @staticmethod
@@ -1629,7 +1682,11 @@ class TelegramBot:
         sync: dict[str, Any],
         language: str,
         system_status: dict[str, Any] | None,
+        space: str,
     ) -> str:
+        space_icon = "🔵" if space == "opencode" else "🟣"
+        space_name = "opencode" if space == "opencode" else "codex"
+        brand = f"{space_icon} <b>OpenSwap</b> · <b>{space_name}</b>"
         effective_active = active
         if sync.get("enabled") and sync.get("total") == 1 and sync.get("targets"):
             effective_active = sync["targets"][0].get("account_id")
@@ -1653,30 +1710,30 @@ class TelegramBot:
                 None,
             )
         if view_account == "__language__":
-            lines = [f"🗣 <b>OpenSwap</b> · {_pick(language, 'language', 'язык')}"]
+            lines = [f"{brand} · 🗣 {_pick(language, 'language', 'язык')}"]
         elif view_account == "__system__":
-            lines = [f"⚙ <b>OpenSwap</b> · {_pick(language, 'system', 'система')}"]
+            lines = [f"{brand} · ⚙ {_pick(language, 'system', 'система')}"]
         elif view_account == "__tokens__":
             lines = [
-                "📊 <b>OpenSwap</b> · "
+                f"{brand} · 📊 "
                 + _pick(language, "token activity", "активность токенов")
             ]
         elif view_account in {"__hosts__", "__hosts_reset__"}:
-            lines = [f"🌐 <b>OpenSwap</b> · {_pick(language, 'hosts', 'хосты')}"]
+            lines = [f"{brand} · 🌐 {_pick(language, 'hosts', 'хосты')}"]
         elif host_target is not None:
-            lines = [f"🖥 <b>OpenSwap</b> · {_pick(language, 'assignment', 'назначение')}"]
+            lines = [f"{brand} · 🖥 {_pick(language, 'assignment', 'назначение')}"]
         elif export_account is not None:
             lines = [
-                f"📤 <b>OpenSwap</b> · "
+                f"{brand} · 📤 "
                 + _pick(language, "export auth.json", "экспорт auth.json")
             ]
         elif pending_login or login_choice or import_prompt:
-            lines = [f"➕ <b>OpenSwap</b> · {_pick(language, 'add session', 'добавить сессию')}"]
+            lines = [f"{brand} · ➕ {_pick(language, 'add session', 'добавить сессию')}"]
         elif selected:
-            lines = [f"👤 <b>OpenSwap</b> · {_pick(language, 'session', 'сессия')}"]
+            lines = [f"{brand} · 👤 {_pick(language, 'session', 'сессия')}"]
         else:
             lines = [
-                "🔐 <b>OpenSwap</b> · "
+                f"{brand} · "
                 + _pick(language, f"sessions: {len(accounts)}", f"сессий: {len(accounts)}")
             ]
         if notice:
@@ -1697,10 +1754,11 @@ class TelegramBot:
             )
         elif view_account == "__system__" and system_status is not None:
             codex = system_status["codex"]
-            opencode = system_status["opencode"]
+            client = system_status["client"]
             sessions = system_status["sessions"]
             system_sync = system_status["sync"]
-            opencode_ready = opencode["status"] == "ready"
+            client_ready = client["status"] == "ready"
+            client_name = "OpenCode" if client["kind"] == "opencode" else "Codex CLI"
             codex_label = codex.get("version") or _pick(
                 language, "unavailable", "недоступен"
             )
@@ -1708,16 +1766,16 @@ class TelegramBot:
                 [
                     f"<b>OpenSwap {html.escape(system_status['version'])}</b>",
                     "",
-                    f"{_status_icon(opencode_ready)} 🔐 OpenCode · "
+                    f"{_status_icon(client_ready)} 🔐 {client_name} · "
                     + _pick(
                         language,
-                        opencode["status"].replace("_", " "),
+                        client["status"].replace("_", " "),
                         {
                             "ready": "готов",
                             "missing": "файл не найден",
                             "invalid": "ошибка файла",
                             "unsafe_permissions": "небезопасные права",
-                        }.get(opencode["status"], opencode["status"]),
+                        }.get(client["status"], client["status"]),
                     ),
                     f"{_status_icon(codex['ok'])} 🤖 Codex · {html.escape(codex_label)}",
                     f"{_status_icon(system_status['storage']['ok'])} "
@@ -1872,7 +1930,7 @@ class TelegramBot:
                         "empty": _pick(language, "no session", "нет сессии"),
                     }.get(status, _pick(language, "unknown", "неизвестно"))
                 lines.append(
-                    f"{icon} <b>{html.escape(target['name'])}</b> · "
+                    f"{icon} <b>{html.escape(target.get('label') or target['name'])}</b> · "
                     f"{html.escape(str(label))}"
                 )
             lines.append("")
@@ -1898,7 +1956,7 @@ class TelegramBot:
             mode = _pick(language, "override", "индивидуально") if target.get("override") else _pick(language, "default", "по умолчанию")
             lines.extend(
                 [
-                    f"🖥 <b>{html.escape(target['name'])}</b>",
+                    f"🖥 <b>{html.escape(target.get('label') or target['name'])}</b>",
                     f"👤 {_pick(language, 'Session', 'Сессия')}: <b>{html.escape(target.get('session') or '—')}</b>",
                     f"🔀 {_pick(language, 'Mode', 'Режим')}: {mode}",
                     f"🔄 {_pick(language, 'Status', 'Состояние')}: {status_label}",
@@ -2012,6 +2070,10 @@ class TelegramBot:
                         )
                         + f"<b>{html.escape(account_name(active_account))}</b>"
                     )
+            else:
+                lines.append(
+                    _pick(language, "🎯 Active: <i>choose a session</i>", "🎯 Активная: <i>выберите сессию</i>")
+                )
             if sync["enabled"]:
                 if sync["total"] == 1:
                     target = sync["targets"][0]
@@ -2029,7 +2091,7 @@ class TelegramBot:
                     )
                     lines.append(
                         f"🔄 {_pick(language, 'Sync', 'Синхронизация')}: "
-                        f"<b>{html.escape(target['name'])}</b> {status_label}"
+                        f"<b>{html.escape(target.get('label') or target['name'])}</b> {status_label}"
                     )
                 else:
                     lines.append(
@@ -2103,6 +2165,7 @@ class TelegramBot:
         view_account: str | None,
         sync: dict[str, Any],
         language: str,
+        space: str,
     ) -> list[list[dict[str, str]]]:
         effective_active = active
         if sync.get("enabled") and sync.get("total") == 1 and sync.get("targets"):
@@ -2166,7 +2229,7 @@ class TelegramBot:
                     [
                         {
                             "text": (
-                                f"{icon} {target['name']} · "
+                                f"{icon} {target.get('label') or target['name']} · "
                                 f"{target.get('session') or '—'}{suffix}"
                             ),
                             "callback_data": f"host:{target['name']}",
@@ -2357,7 +2420,7 @@ class TelegramBot:
                             }
                         ]
                     )
-            if selected["id"] != active and not selected.get("target_count"):
+            if not selected.get("in_use"):
                 keyboard.append(
                     [
                         {

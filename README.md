@@ -2,11 +2,12 @@
 
 # OpenSwap
 
-**A small Telegram control plane for ChatGPT Sessions in OpenCode.**
+**A small Telegram control plane for ChatGPT Sessions in OpenCode and Codex CLI.**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Windows and Linux](https://img.shields.io/badge/Windows%20%7C%20Linux-supported-2ea44f)](#windows-and-linux)
 [![OpenCode](https://img.shields.io/badge/OpenCode-compatible-111111)](https://opencode.ai/)
+[![Codex CLI](https://img.shields.io/badge/Codex%20CLI-compatible-111111)](https://developers.openai.com/codex/cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
 </div>
@@ -16,13 +17,16 @@ have several ChatGPT accounts, work from more than one machine, or want to know
 which usage window resets first. Switching credentials by hand is easy to get
 wrong, and it gives you no useful view of account health or remaining usage.
 
-OpenSwap turns those credentials into named Sessions and puts the entire
-workflow in one compact Telegram message. It shows live allowance, reset
-windows, account-wide token history, login health, earned reset credits, and
-per-host routing. It changes only the OpenAI entry in `auth.json`, preserving
-every unrelated provider.
+OpenSwap turns those credentials into named Sessions shared by two independent
+workspaces: OpenCode-compatible clients and Codex CLI. Each workspace keeps its
+own active/default Session, so OpenCode can use Session 3 while Codex uses
+Session 2. OpenSwap puts the entire workflow in one compact Telegram message.
+It shows live allowance, reset windows, account-wide token history, login
+health, earned reset credits, and
+per-host routing. Its target-specific merge preserves every field it does not
+own.
 
-It is OpenCode-first and also works with
+The OpenCode workspace also works with
 [OpenCodez](https://github.com/Krablante/opencodez), which uses the same
 compatible credential store.
 
@@ -39,7 +43,7 @@ That means every capability lives in one place:
 - export a Session as Codex CLI or OpenCode/OpenCodez `auth.json`;
 - inspect plan, allowance, reset times, token history, and login health;
 - refresh or reauthorize a Session;
-- select the default Session;
+- select a different default Session for OpenCode and Codex CLI;
 - assign a different Session to one host;
 - consume the nearest expiring earned reset after confirmation;
 - remove an unassigned Session;
@@ -108,7 +112,14 @@ auth_file = "/home/user/.local/share/opencode/auth.json"
 
 [codex]
 binary = "codex"
+auth_file = "~/.codex/auth.json"
 ```
+
+`codex.auth_file` is optional. When it is present, the workspace switch appears
+in Telegram and OpenSwap manages the file-based Codex login. Codex must use
+`cli_auth_credentials_store = "file"`; OS keychain credentials cannot be
+switched by replacing `auth.json`. Omit `auth_file` to retain the original
+OpenCode-only interface and behavior.
 
 All relative paths are resolved from `config.toml`, never from an unpredictable
 shell working directory. On Windows, TOML literal strings avoid escaping
@@ -128,6 +139,13 @@ See [`config.example.toml`](config.example.toml) for scheduler and multihost
 settings.
 
 ## The Telegram menu
+
+Every screen identifies the selected workspace with `🔵 opencode` or `🟣 codex`.
+The root ends with one `⇄ Codex` or `⇄ OpenCode` button that redraws the same
+compact interface for the other client. The Session pool, allowance, token
+activity, login, import, export, refresh, and reset actions are shared. Active
+markers, default selection, Hosts, and target health apply only to the selected
+workspace. The switch is hidden during sign-in and import prompts.
 
 The root screen shows Sessions as compact buttons with remaining allowance,
 reset countdown, and earned reset credits. Selecting a Session opens its
@@ -160,16 +178,16 @@ remaining allowance, or host-level attribution.
 `System` is always available without taking over the interface:
 
 - with several hosts, `System` is on the left and `Hosts` is on the right of the
-  same bottom row;
-- with zero or one configured host, `System` occupies the full bottom row and
+  same navigation row;
+- with zero or one configured host, `System` occupies the full navigation row and
   host-management controls disappear.
 
 The System screen reports:
 
 ```text
-OpenSwap 2.3.0
+OpenSwap 2.4.0
 
-✓ 🔐 OpenCode · ready
+✓ 🔐 Codex CLI · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
 ✓ 💾 Storage
 ! 👤 Sessions · 2/3
@@ -220,22 +238,27 @@ command_timeout_seconds = 15
 [[hosts]]
 name = "local"
 auth_file = "/home/user/.local/share/opencode/auth.json"
+codex_auth_file = "~/.codex/auth.json"
 
 [[hosts]]
 name = "server"
 auth_file = "/home/user/.local/share/opencode/auth.json"
+codex_auth_file = "~/.codex/auth.json"
 ssh = "user@server.example"
 python = "python3"
 ```
 
-Exactly one local host must point at `[opencode].auth_file`. Remote paths remain
-native to the remote operating system, so a Linux coordinator can target a
-Windows path and a Windows coordinator can target Linux. Set `python = "python"`
-for a Windows SSH target when that is its Python command.
+Exactly one local host must point at `[opencode].auth_file`. When the Codex
+workspace is enabled, exactly one local `codex_auth_file` must also match
+`[codex].auth_file`; remote `codex_auth_file` values remain optional. Remote
+paths remain native to the remote operating system, so a Linux coordinator can
+target a Windows path and a Windows coordinator can target Linux. For a Windows
+SSH target, set `python = "python"` when that is its Python command.
 
-Routing stays intentionally sparse: one Session is the default, and only hosts
-that differ are stored as overrides. New hosts inherit the default. Offline
-assignments are retained. Successful local changes become `synced` in the same
+Routing stays intentionally sparse: each workspace has one default Session, and
+only its hosts that differ are stored as overrides. New hosts inherit that
+workspace's default. Offline assignments are retained. Successful local changes
+become `synced` in the same
 transaction; remote writes use bounded SSH and compare-and-swap.
 
 ## Windows and Linux
@@ -255,8 +278,11 @@ Python. There are no separate Windows and Linux editions.
 
 ## Safety
 
-Each Session lives in an isolated credential slot. The registry stores routing,
-fingerprints, health, and usage metadata, but never raw access or refresh tokens.
+Each Session lives in an isolated credential slot. OpenCode publication replaces
+only `openai`; Codex publication replaces only `auth_mode`, `OPENAI_API_KEY`,
+`tokens`, and `last_refresh`. Unknown top-level keys survive in both live files.
+The registry stores routing, fingerprints, health, and usage metadata, but never
+raw access or refresh tokens.
 OpenSwap rejects dead imports, blocks deletion of assigned Sessions, preserves
 unknown providers, uses atomic writes, and refuses a remote update when the file
 changed during publication.
@@ -267,8 +293,8 @@ only from its detail screen, requires an explicit format choice, and sends the
 credential document directly from memory. The bot cannot run arbitrary commands
 or read arbitrary paths.
 
-Stop the process before backing up or restoring `data/`. The live OpenCode
-`auth.json` is a published view; the isolated Session slots are canonical.
+Stop the process before backing up or restoring `data/`. Live OpenCode and Codex
+`auth.json` files are published views; the isolated Session slots are canonical.
 
 See [Architecture](docs/ARCHITECTURE.md),
 [Operations](docs/OPERATIONS.md), and [Security](SECURITY.md) for the complete

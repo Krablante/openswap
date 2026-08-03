@@ -1,4 +1,4 @@
-"""State, token conversion, refresh, and atomic OpenCode auth publication."""
+"""State, token refresh, and atomic OpenCode/Codex auth publication."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from .sync import (
 UTC = dt.UTC
 TOKEN_USAGE_REFRESH_SECONDS = 30 * 60
 TOKEN_USAGE_STALE_SECONDS = 2 * 60 * 60
+SPACES = ("opencode", "codex")
 
 
 class OpenSwapError(RuntimeError):
@@ -53,6 +54,7 @@ class Settings:
     target_auth: Path
     codex_bin: Path
     sync: SyncConfig | None
+    codex_auth: Path | None = None
     refresh_margin_seconds: int = 20 * 60
     usage_stale_seconds: int = 3 * 60
     token_usage_refresh_seconds: int = TOKEN_USAGE_REFRESH_SECONDS
@@ -269,7 +271,7 @@ def openai_entry(document: Any, source: Path | str) -> dict[str, Any]:
 
 
 class OpenSwap:
-    REGISTRY_VERSION = 2
+    REGISTRY_VERSION = 3
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -289,6 +291,10 @@ class OpenSwap:
     @property
     def accounts_dir(self) -> Path:
         return self.settings.state_dir / "accounts"
+
+    def space_enabled(self, space: str) -> bool:
+        self._validate_space(space)
+        return space == "opencode" or self.settings.codex_auth is not None
 
     def initialize(self) -> None:
         secure_directory(self.settings.state_dir)
@@ -357,7 +363,7 @@ class OpenSwap:
                             existing["last_refresh"] = iso_now()
                             if self._account_in_use(registry, existing_uuid):
                                 self._propagate_account_locked(
-                                    registry, existing_uuid, existing_token
+                                    registry, existing_uuid
                                 )
                     except (CodexError, OpenSwapError) as exc:
                         if not self._is_dead_auth_error(exc):
@@ -385,7 +391,7 @@ class OpenSwap:
                 )
                 if self._account_in_use(registry, existing_uuid):
                     self._propagate_account_locked(
-                        registry, existing_uuid, replacement
+                        registry, existing_uuid
                     )
                 self._save_registry(registry)
                 return AuthImportResult("replaced", dict(existing))
@@ -527,7 +533,7 @@ class OpenSwap:
                     )
                 self._update_account(registry, account_uuid, token, snapshot)
                 if self._account_in_use(registry, account_uuid):
-                    self._propagate_account_locked(registry, account_uuid, token)
+                    self._propagate_account_locked(registry, account_uuid)
                 self._save_registry(registry)
                 return dict(account)
         except BaseException:
@@ -544,8 +550,14 @@ class OpenSwap:
         with self.locked():
             registry = self._load_registry()
             account_uuid, account = self._resolve_account(registry, selector)
-            if registry.get("default_account") == account_uuid:
-                raise OpenSwapError("cannot remove the default account; switch first")
+            for space, default_uuid in registry["defaults"].items():
+                if default_uuid != account_uuid:
+                    continue
+                if self.space_enabled(space):
+                    raise OpenSwapError(
+                        f"cannot remove the {space} default account; switch first"
+                    )
+                registry["defaults"][space] = None
             assigned_targets = sorted(
                 name
                 for name, assigned_uuid in registry["target_overrides"].items()
@@ -562,21 +574,32 @@ class OpenSwap:
             shutil.rmtree(self._account_dir(account_uuid), ignore_errors=True)
             return account
 
-    def accounts(self) -> tuple[list[dict[str, Any]], str | None]:
+    def accounts(
+        self, space: str = "opencode"
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        self._validate_space(space)
         with self.locked():
             registry = self._load_registry()
             self._reconcile_locked(registry)
             self._save_registry(registry)
-            target_counts = self._target_counts(registry)
+            target_counts = self._target_counts(registry, space)
             accounts = []
             for account_uuid, value in registry["accounts"].items():
                 account = dict(value)
                 account["target_count"] = target_counts.get(account_uuid, 0)
+                account["in_use"] = self._account_in_use(registry, account_uuid)
                 accounts.append(account)
             accounts.sort(key=lambda value: int(value["sequence"]))
-            return accounts, registry.get("default_account")
+            return accounts, registry["defaults"].get(space)
 
-    def use(self, selector: str, *, all_targets: bool = False) -> dict[str, Any]:
+    def use(
+        self,
+        selector: str,
+        *,
+        space: str = "opencode",
+        all_targets: bool = False,
+    ) -> dict[str, Any]:
+        self._require_space(space)
         with self.locked():
             registry = self._load_registry()
             self._reconcile_locked(registry)
@@ -587,17 +610,23 @@ class OpenSwap:
             token = self._read_slot_entry(account_uuid)
             self._update_account(registry, account_uuid, token, snapshot)
             registry["accounts"][account_uuid]["limits_refresh_source"] = "manual"
-            registry["default_account"] = account_uuid
+            registry["defaults"][space] = account_uuid
+            target_names = self._space_target_names(space)
             if all_targets:
-                registry["target_overrides"] = {}
+                registry["target_overrides"] = {
+                    target_name: assigned_uuid
+                    for target_name, assigned_uuid in registry["target_overrides"].items()
+                    if target_name not in target_names
+                }
             else:
                 registry["target_overrides"] = {
                     target_name: assigned_uuid
                     for target_name, assigned_uuid in registry["target_overrides"].items()
                     if assigned_uuid != account_uuid
+                    or target_name not in target_names
                 }
-            self._publish_local_assignment_locked(registry)
-            self._mark_routing_pending(registry)
+            self._publish_local_assignment_locked(registry, space)
+            self._mark_routing_pending(registry, space)
             self._mark_sync_dirty()
             self._save_registry(registry)
             return dict(registry["accounts"][account_uuid])
@@ -610,13 +639,13 @@ class OpenSwap:
             account_uuid, account = self._resolve_account(registry, selector)
             if account.get("last_error") == "login required":
                 raise DeadSessionError("login required")
-            if account_uuid == registry.get("default_account"):
+            if account_uuid == registry["defaults"].get(target.kind):
                 registry["target_overrides"].pop(target.name, None)
             else:
                 registry["target_overrides"][target.name] = account_uuid
             self._mark_target_pending(registry, target.name)
             if self._is_local_target(target):
-                self._publish_local_assignment_locked(registry)
+                self._publish_local_assignment_locked(registry, target.kind)
             registry["updated_at"] = iso_now()
             self._mark_sync_dirty()
             self._save_registry(registry)
@@ -630,27 +659,39 @@ class OpenSwap:
             registry["target_overrides"].pop(target.name, None)
             self._mark_target_pending(registry, target.name)
             if self._is_local_target(target):
-                self._publish_local_assignment_locked(registry)
+                self._publish_local_assignment_locked(registry, target.kind)
             registry["updated_at"] = iso_now()
             self._mark_sync_dirty()
             self._save_registry(registry)
             return self._target_assignment(registry, target)
 
-    def clear_target_overrides(self) -> int:
+    def clear_target_overrides(self, space: str = "opencode") -> int:
+        self._require_space(space)
         with self.locked():
             registry = self._load_registry()
-            removed = len(registry["target_overrides"])
-            registry["target_overrides"] = {}
-            self._publish_local_assignment_locked(registry)
-            self._mark_routing_pending(registry)
+            target_names = self._space_target_names(space)
+            removed = sum(
+                target_name in target_names
+                for target_name in registry["target_overrides"]
+            )
+            registry["target_overrides"] = {
+                target_name: account_uuid
+                for target_name, account_uuid in registry["target_overrides"].items()
+                if target_name not in target_names
+            }
+            self._publish_local_assignment_locked(registry, space)
+            self._mark_routing_pending(registry, space)
             registry["updated_at"] = iso_now()
             self._mark_sync_dirty()
             self._save_registry(registry)
             return removed
 
-    def target_override_count(self) -> int:
+    def target_override_count(self, space: str = "opencode") -> int:
+        self._validate_space(space)
         with self.locked():
-            return len(self._load_registry()["target_overrides"])
+            overrides = self._load_registry()["target_overrides"]
+            names = self._space_target_names(space)
+            return sum(name in names for name in overrides)
 
     def refresh(self, selector: str, *, include_limits: bool = True) -> dict[str, Any]:
         with self.locked():
@@ -669,7 +710,7 @@ class OpenSwap:
                     "limits_refresh_source"
                 ] = "manual"
             if self._account_in_use(registry, account_uuid):
-                self._propagate_account_locked(registry, account_uuid, token)
+                self._propagate_account_locked(registry, account_uuid)
             self._save_registry(registry)
             return dict(registry["accounts"][account_uuid])
 
@@ -712,7 +753,7 @@ class OpenSwap:
                         self._update_account(registry, account_uuid, token, snapshot)
                         if self._account_in_use(registry, account_uuid):
                             self._propagate_account_locked(
-                                registry, account_uuid, token
+                                registry, account_uuid
                             )
                         refreshed.append(name)
 
@@ -729,7 +770,7 @@ class OpenSwap:
                             account["last_refresh"] = iso_now()
                             if self._account_in_use(registry, account_uuid):
                                 self._propagate_account_locked(
-                                    registry, account_uuid, token
+                                    registry, account_uuid
                                 )
                         checked.append(name)
                         account["limits_refresh_source"] = source
@@ -853,16 +894,17 @@ class OpenSwap:
             token = self._read_slot_entry(account_uuid)
             self._update_account(registry, account_uuid, token, snapshot)
             if self._account_in_use(registry, account_uuid):
-                self._propagate_account_locked(registry, account_uuid, token)
+                self._propagate_account_locked(registry, account_uuid)
             self._save_registry(registry)
             return dict(registry["accounts"][account_uuid]), outcome
 
-    def status(self) -> dict[str, Any]:
+    def status(self, space: str = "opencode") -> dict[str, Any]:
+        self._validate_space(space)
         with self.locked():
             registry = self._load_registry()
             drift = self._reconcile_locked(registry)
             self._save_registry(registry)
-            default_account = registry.get("default_account")
+            default_account = registry["defaults"].get(space)
             return {
                 "accounts": len(registry["accounts"]),
                 "default": (
@@ -871,9 +913,9 @@ class OpenSwap:
                     else None
                 ),
                 "drift": drift,
-                "target": str(self.settings.target_auth),
+                "target": str(self._space_auth_path(space) or ""),
                 "state": str(self.settings.state_dir),
-                "sync": self._sync_summary(registry),
+                "sync": self._sync_summary(registry, space=space),
             }
 
     def sync_targets(self, *, force: bool = True) -> dict[str, Any]:
@@ -897,7 +939,7 @@ class OpenSwap:
             with self.locked():
                 registry = self._load_registry()
                 desired_uuids = {
-                    target.name: self._desired_account_uuid(registry, target.name)
+                    target.name: self._desired_account_uuid(registry, target)
                     for target in config.targets
                 }
             snapshots: dict[str, TargetSnapshot] = {}
@@ -935,7 +977,7 @@ class OpenSwap:
             with self.locked():
                 registry = self._load_registry()
                 desired_uuids = {
-                    target.name: self._desired_account_uuid(registry, target.name)
+                    target.name: self._desired_account_uuid(registry, target)
                     for target in config.targets
                 }
                 desired_entries: dict[str, dict[str, Any]] = {}
@@ -974,18 +1016,23 @@ class OpenSwap:
                         "error": None,
                     }
                     continue
-                current = snapshot.document.get("openai")
-                current_fingerprint = (
-                    credential_fingerprint(current)
-                    if isinstance(current, dict)
-                    else None
-                )
+                try:
+                    current = self._target_entry(snapshot.document, target)
+                    current_fingerprint = credential_fingerprint(current)
+                except OpenSwapError:
+                    current_fingerprint = None
                 expected_fingerprint = credential_fingerprint(desired_entry)
                 try:
                     if current_fingerprint != expected_fingerprint:
-                        write_target(config, snapshot, desired_entry)
+                        write_target(
+                            config,
+                            snapshot,
+                            self._target_credentials(desired_uuid, target),
+                        )
                     target_status[target.name] = {
                         "name": target.name,
+                        "label": target.label or target.name,
+                        "kind": target.kind,
                         "status": "synced",
                         "session": desired_name,
                         "checked_at": checked_at,
@@ -995,14 +1042,12 @@ class OpenSwap:
                     if exc.status == "pending":
                         try:
                             latest = read_target(config, target)
-                            latest_openai = latest.document.get("openai")
-                            if (
-                                isinstance(latest_openai, dict)
-                                and credential_fingerprint(latest_openai)
-                                == expected_fingerprint
-                            ):
+                            latest_entry = self._target_entry(latest.document, target)
+                            if credential_fingerprint(latest_entry) == expected_fingerprint:
                                 target_status[target.name] = {
                                     "name": target.name,
+                                    "label": target.label or target.name,
+                                    "kind": target.kind,
                                     "status": "synced",
                                     "session": desired_name,
                                     "checked_at": checked_at,
@@ -1011,8 +1056,12 @@ class OpenSwap:
                                 continue
                         except SyncError as latest_error:
                             exc = latest_error
+                        except OpenSwapError:
+                            pass
                     target_status[target.name] = {
                         "name": target.name,
+                        "label": target.label or target.name,
+                        "kind": target.kind,
                         "status": exc.status,
                         "session": desired_name,
                         "checked_at": checked_at,
@@ -1030,7 +1079,7 @@ class OpenSwap:
             with self.locked():
                 registry = self._load_registry()
                 latest_uuids = {
-                    target.name: self._desired_account_uuid(registry, target.name)
+                    target.name: self._desired_account_uuid(registry, target)
                     for target in config.targets
                 }
                 latest_entries = {
@@ -1090,13 +1139,15 @@ class OpenSwap:
                 self._wake_event.set()
             return self.sync_status()
 
-    def sync_status(self) -> dict[str, Any]:
+    def sync_status(self, space: str | None = None) -> dict[str, Any]:
+        if space is not None:
+            self._validate_space(space)
         config = self._sync_configuration()
         if config is None:
             return {"enabled": False, "total": 0, "synced": 0, "targets": []}
         with self.locked():
             registry = self._load_registry()
-            return self._sync_summary(registry, config)
+            return self._sync_summary(registry, config, space=space)
 
     def request_sync(self) -> None:
         self._mark_sync_dirty()
@@ -1108,7 +1159,8 @@ class OpenSwap:
     def wake(self) -> None:
         self._wake_event.set()
 
-    def system_status(self) -> dict[str, Any]:
+    def system_status(self, space: str = "opencode") -> dict[str, Any]:
+        self._require_space(space)
         self.initialize()
         issues: list[str] = []
         storage_ok = private_mode_ok(self.settings.state_dir, 0o700)
@@ -1128,18 +1180,20 @@ class OpenSwap:
         if not codex_ok:
             issues.append("codex_unavailable")
 
-        opencode_status = "ready"
+        client_status = "ready"
+        client_auth = self._space_auth_path(space)
+        assert client_auth is not None
         try:
-            document = read_json(self.settings.target_auth)
-            openai_entry(document, self.settings.target_auth)
-            if not private_mode_ok(self.settings.target_auth, 0o600):
-                opencode_status = "unsafe_permissions"
-                issues.append("opencode_permissions")
+            document = read_json(client_auth)
+            self._canonical_uploaded_auth(document)
+            if not private_mode_ok(client_auth, 0o600):
+                client_status = "unsafe_permissions"
+                issues.append("client_permissions")
         except OpenSwapError:
-            opencode_status = (
-                "missing" if not self.settings.target_auth.exists() else "invalid"
+            client_status = (
+                "missing" if not client_auth.exists() else "invalid"
             )
-            issues.append(f"opencode_{opencode_status}")
+            issues.append(f"client_{client_status}")
 
         session_total = 0
         session_healthy = 0
@@ -1184,7 +1238,7 @@ class OpenSwap:
         if token_usage_fresh != session_healthy:
             issues.append("token_usage_stale")
 
-        sync = self.sync_status()
+        sync = self.sync_status(space)
         if sync["enabled"] and sync["synced"] != sync["total"]:
             issues.append("sync_incomplete")
         if self.settings.sync is not None and any(
@@ -1198,7 +1252,7 @@ class OpenSwap:
             "issues": issues,
             "storage": {"ok": storage_ok},
             "codex": {"ok": codex_ok, "version": codex_version},
-            "opencode": {"status": opencode_status},
+            "client": {"kind": space, "status": client_status},
             "sessions": {
                 "healthy": session_healthy,
                 "total": session_total,
@@ -1248,7 +1302,9 @@ class OpenSwap:
         user_id: int,
         message_id: int,
         view_account: str | None,
+        space: str = "opencode",
     ) -> None:
+        self._require_space(space)
         with self.locked():
             registry = self._load_registry()
             menus = registry.setdefault("telegram_menus", {})
@@ -1256,6 +1312,7 @@ class OpenSwap:
                 "user_id": user_id,
                 "message_id": message_id,
                 "view_account": view_account,
+                "space": space,
             }
             self._save_registry(registry)
 
@@ -1273,6 +1330,51 @@ class OpenSwap:
         return self.settings.sync
 
     @staticmethod
+    def _validate_space(space: str) -> None:
+        if space not in SPACES:
+            raise OpenSwapError(f"unsupported space: {space}")
+
+    def _require_space(self, space: str) -> None:
+        self._validate_space(space)
+        if not self.space_enabled(space):
+            raise OpenSwapError(f"{space} space is not configured")
+
+    def _space_auth_path(self, space: str) -> Path | None:
+        self._validate_space(space)
+        return self.settings.target_auth if space == "opencode" else self.settings.codex_auth
+
+    def _space_targets(self, space: str) -> tuple[SyncTarget, ...]:
+        self._validate_space(space)
+        config = self._sync_configuration()
+        if config is None:
+            return ()
+        return tuple(target for target in config.targets if target.kind == space)
+
+    def _space_target_names(self, space: str) -> set[str]:
+        return {target.name for target in self._space_targets(space)}
+
+    def _local_target(self, space: str) -> SyncTarget | None:
+        path = self._space_auth_path(space)
+        if path is None:
+            return None
+        config = self._sync_configuration()
+        if config is not None:
+            return next(
+                (
+                    target
+                    for target in config.targets
+                    if target.kind == space and target.ssh is None and target.path == path
+                ),
+                None,
+            )
+        return SyncTarget(
+            name="local" if space == "opencode" else "local.codex",
+            path=path,
+            kind=space,
+            label="local",
+        )
+
+    @staticmethod
     def _resolve_target(config: SyncConfig | None, target_name: str) -> SyncTarget:
         if config is None:
             raise OpenSwapError("host synchronization is not configured")
@@ -1282,93 +1384,114 @@ class OpenSwap:
         return matches[0]
 
     def _is_local_target(self, target: SyncTarget) -> bool:
-        return target.ssh is None and target.path == self.settings.target_auth
+        path = self._space_auth_path(target.kind)
+        return path is not None and target.ssh is None and target.path == path
 
     @staticmethod
     def _desired_account_uuid(
-        registry: dict[str, Any], target_name: str
+        registry: dict[str, Any], target: SyncTarget
     ) -> str | None:
-        override = registry["target_overrides"].get(target_name)
-        return override if isinstance(override, str) else registry.get("default_account")
+        override = registry["target_overrides"].get(target.name)
+        return (
+            override
+            if isinstance(override, str)
+            else registry["defaults"].get(target.kind)
+        )
 
     def _target_assignment(
         self, registry: dict[str, Any], target: SyncTarget
     ) -> dict[str, Any]:
-        account_uuid = self._desired_account_uuid(registry, target.name)
+        account_uuid = self._desired_account_uuid(registry, target)
         account = registry["accounts"].get(account_uuid)
         return {
             "name": target.name,
+            "label": target.label or target.name,
+            "kind": target.kind,
             "account_id": account_uuid,
             "session": account_name(account) if account is not None else None,
             "override": target.name in registry["target_overrides"],
         }
 
-    def _target_counts(self, registry: dict[str, Any]) -> dict[str, int]:
+    def _target_counts(
+        self, registry: dict[str, Any], space: str
+    ) -> dict[str, int]:
         config = self._sync_configuration()
         counts: dict[str, int] = {}
         if config is None:
             return counts
         for target in config.targets:
-            account_uuid = self._desired_account_uuid(registry, target.name)
+            if target.kind != space:
+                continue
+            account_uuid = self._desired_account_uuid(registry, target)
             if account_uuid is not None:
                 counts[account_uuid] = counts.get(account_uuid, 0) + 1
         return counts
 
-    @staticmethod
-    def _account_in_use(registry: dict[str, Any], account_uuid: str) -> bool:
-        return account_uuid == registry.get("default_account") or account_uuid in set(
+    def _account_in_use(
+        self, registry: dict[str, Any], account_uuid: str
+    ) -> bool:
+        active_defaults = {
+            default_uuid
+            for space, default_uuid in registry["defaults"].items()
+            if self.space_enabled(space)
+        }
+        return account_uuid in active_defaults or account_uuid in set(
             registry["target_overrides"].values()
         )
 
-    def _local_account_uuid(self, registry: dict[str, Any]) -> str | None:
-        config = self._sync_configuration()
-        if config is not None:
-            for target in config.targets:
-                if self._is_local_target(target):
-                    return self._desired_account_uuid(registry, target.name)
-        return registry.get("default_account")
+    def _local_account_uuid(
+        self, registry: dict[str, Any], space: str
+    ) -> str | None:
+        target = self._local_target(space)
+        return (
+            self._desired_account_uuid(registry, target)
+            if target is not None
+            else registry["defaults"].get(space)
+        )
 
-    def _publish_local_assignment_locked(self, registry: dict[str, Any]) -> None:
-        config = self._sync_configuration()
-        local_target = (
-            next(
-                (target for target in config.targets if self._is_local_target(target)),
-                None,
-            )
-            if config is not None
-            else None
-        )
-        account_uuid = (
-            self._desired_account_uuid(registry, local_target.name)
-            if local_target is not None
-            else registry.get("default_account")
-        )
+    def _publish_local_assignment_locked(
+        self, registry: dict[str, Any], space: str
+    ) -> None:
+        local_target = self._local_target(space)
+        if local_target is None:
+            return
+        account_uuid = self._desired_account_uuid(registry, local_target)
         if account_uuid not in registry["accounts"]:
             return
-        self._publish_locked(registry, account_uuid, self._read_slot_entry(account_uuid))
-        if local_target is not None:
+        try:
+            self._publish_target_locked(registry, local_target, account_uuid)
             registry.setdefault("sync", {}).setdefault("targets", {})[
                 local_target.name
             ] = {
                 "name": local_target.name,
+                "label": local_target.label or local_target.name,
+                "kind": local_target.kind,
                 "status": "synced",
                 "session": account_name(registry["accounts"][account_uuid]),
                 "checked_at": iso_now(),
                 "error": None,
             }
+        except SyncError as exc:
+            if exc.status != "pending":
+                raise OpenSwapError(str(exc)) from exc
+            self._mark_target_pending(registry, local_target.name, str(exc))
 
     def _propagate_account_locked(
         self,
         registry: dict[str, Any],
         account_uuid: str,
-        token: dict[str, Any],
     ) -> None:
-        if self._local_account_uuid(registry) == account_uuid:
-            self._publish_locked(registry, account_uuid, token)
+        for space in SPACES:
+            if not self.space_enabled(space):
+                continue
+            if self._local_account_uuid(registry, space) == account_uuid:
+                self._publish_local_assignment_locked(registry, space)
         self._mark_sync_dirty()
 
     @staticmethod
-    def _mark_target_pending(registry: dict[str, Any], target_name: str) -> None:
+    def _mark_target_pending(
+        registry: dict[str, Any], target_name: str, error: str | None = None
+    ) -> None:
         targets = registry.setdefault("sync", {}).setdefault("targets", {})
         previous = targets.get(target_name)
         targets[target_name] = {
@@ -1376,14 +1499,18 @@ class OpenSwap:
             "status": "pending",
             "session": None,
             "checked_at": previous.get("checked_at") if isinstance(previous, dict) else None,
-            "error": None,
+            "error": error,
         }
 
-    def _mark_routing_pending(self, registry: dict[str, Any]) -> None:
+    def _mark_routing_pending(
+        self, registry: dict[str, Any], space: str
+    ) -> None:
         config = self._sync_configuration()
         if config is None:
             return
         for target in config.targets:
+            if target.kind != space:
+                continue
             if (
                 target.name not in registry["target_overrides"]
                 and not self._is_local_target(target)
@@ -1394,7 +1521,11 @@ class OpenSwap:
         self,
         registry: dict[str, Any],
         config: SyncConfig | None = None,
+        *,
+        space: str | None = None,
     ) -> dict[str, Any]:
+        if space is not None:
+            self._validate_space(space)
         if config is None:
             config = self._sync_configuration()
         if config is None:
@@ -1402,7 +1533,7 @@ class OpenSwap:
                 "enabled": False,
                 "total": 0,
                 "synced": 0,
-                "default_account": registry.get("default_account"),
+                "default_account": registry["defaults"].get(space or "opencode"),
                 "default_session": None,
                 "override_count": 0,
                 "targets": [],
@@ -1416,6 +1547,8 @@ class OpenSwap:
         )
         targets: list[dict[str, Any]] = []
         for target in config.targets:
+            if space is not None and target.kind != space:
+                continue
             assignment = self._target_assignment(registry, target)
             stored = stored_targets.get(target.name)
             if isinstance(stored, dict):
@@ -1430,10 +1563,13 @@ class OpenSwap:
                     "error": None,
                 }
             item["account_id"] = assignment["account_id"]
+            item["label"] = target.label or target.name
+            item["kind"] = target.kind
             item["session"] = assignment["session"]
             item["override"] = assignment["override"]
             targets.append(item)
-        default_uuid = registry.get("default_account")
+        default_space = space or "opencode"
+        default_uuid = registry["defaults"].get(default_space)
         default_account = registry["accounts"].get(default_uuid)
         return {
             "enabled": True,
@@ -1514,7 +1650,7 @@ class OpenSwap:
                 existing["last_error"] = None
                 if self._account_in_use(registry, expected_uuid):
                     self._propagate_account_locked(
-                        registry, expected_uuid, replacement
+                        registry, expected_uuid
                     )
                 self._save_registry(registry)
             try:
@@ -1530,7 +1666,7 @@ class OpenSwap:
                 self._update_account(registry, expected_uuid, replacement, snapshot)
                 if self._account_in_use(registry, expected_uuid):
                     self._propagate_account_locked(
-                        registry, expected_uuid, replacement
+                        registry, expected_uuid
                     )
                 self._save_registry(registry)
             return True
@@ -1540,7 +1676,7 @@ class OpenSwap:
     def _empty_registry(self) -> dict[str, Any]:
         return {
             "version": self.REGISTRY_VERSION,
-            "default_account": None,
+            "defaults": {"opencode": None, "codex": None},
             "target_overrides": {},
             "accounts": {},
             "next_sequence": 1,
@@ -1555,9 +1691,16 @@ class OpenSwap:
         if not isinstance(document, dict):
             raise OpenSwapError("unsupported or malformed OpenSwap registry")
         if document.get("version") == 1:
-            document["version"] = self.REGISTRY_VERSION
+            document["version"] = 2
             document["default_account"] = document.pop("active", None)
             document["target_overrides"] = {}
+        if document.get("version") == 2:
+            previous_default = document.pop("default_account", None)
+            document["version"] = self.REGISTRY_VERSION
+            document["defaults"] = {
+                "opencode": previous_default,
+                "codex": previous_default,
+            }
         elif document.get("version") != self.REGISTRY_VERSION:
             raise OpenSwapError("unsupported or malformed OpenSwap registry")
         if not isinstance(document.get("accounts"), dict):
@@ -1570,11 +1713,17 @@ class OpenSwap:
             for user_id, language in languages.items()
         ):
             raise OpenSwapError("OpenSwap registry has an invalid Telegram language map")
-        default_uuid = document.get("default_account")
-        if default_uuid is not None and (
-            not isinstance(default_uuid, str) or default_uuid not in document["accounts"]
-        ):
-            raise OpenSwapError("OpenSwap registry has an invalid default account")
+        defaults = document.get("defaults")
+        if not isinstance(defaults, dict) or set(defaults) != set(SPACES):
+            raise OpenSwapError("OpenSwap registry has an invalid default map")
+        for space, default_uuid in defaults.items():
+            if default_uuid is not None and (
+                not isinstance(default_uuid, str)
+                or default_uuid not in document["accounts"]
+            ):
+                raise OpenSwapError(
+                    f"OpenSwap registry has an invalid {space} default account"
+                )
         for target_name, account_uuid in document["target_overrides"].items():
             if not isinstance(target_name, str) or not target_name:
                 raise OpenSwapError("OpenSwap registry has an invalid target override")
@@ -1959,24 +2108,48 @@ class OpenSwap:
                 return account
         return None
 
-    def _publish_locked(
+    def _target_credentials(
+        self, account_uuid: str, target: SyncTarget
+    ) -> dict[str, Any]:
+        return (
+            self._read_slot_auth(account_uuid)
+            if target.kind == "codex"
+            else self._read_slot_entry(account_uuid)
+        )
+
+    def _target_entry(
+        self, document: dict[str, Any], target: SyncTarget
+    ) -> dict[str, Any]:
+        if target.kind == "opencode":
+            return openai_entry(document, target.path)
+        codex_auth = self._canonical_uploaded_auth(document)
+        tokens = codex_auth["tokens"]
+        return {
+            "type": "oauth",
+            "access": tokens["access_token"],
+            "refresh": tokens["refresh_token"],
+            "expires": token_expiry_ms(tokens["access_token"]),
+            "accountId": tokens["account_id"],
+        }
+
+    def _publish_target_locked(
         self,
         registry: dict[str, Any],
+        target: SyncTarget,
         account_uuid: str,
-        token: dict[str, Any],
     ) -> None:
+        token = self._read_slot_entry(account_uuid)
         if token["expires"] <= int((utc_now().timestamp() + 60) * 1000):
             raise OpenSwapError("refusing to publish an expired access token")
-        document = (
-            read_json(self.settings.target_auth)
-            if self.settings.target_auth.exists()
-            else {}
+        config = self._sync_configuration() or SyncConfig(
+            interval_seconds=120,
+            connect_timeout_seconds=5,
+            command_timeout_seconds=15,
+            targets=(target,),
         )
-        if not isinstance(document, dict):
-            raise OpenSwapError("target auth document is not an object")
-        document["openai"] = token
-        atomic_json(self.settings.target_auth, document)
-        published = openai_entry(read_json(self.settings.target_auth), self.settings.target_auth)
+        snapshot = read_target(config, target)
+        write_target(config, snapshot, self._target_credentials(account_uuid, target))
+        published = self._target_entry(read_target(config, target).document, target)
         if published["accountId"] != token["accountId"]:
             raise OpenSwapError("target auth verification failed after publication")
         registry["accounts"][account_uuid]["last_export_fingerprint"] = fingerprint(
@@ -1990,29 +2163,67 @@ class OpenSwap:
         self._wake_event.set()
 
     def _reconcile_locked(self, registry: dict[str, Any]) -> str | None:
-        if not self.settings.target_auth.exists():
-            return "target auth is missing"
-        target = openai_entry(read_json(self.settings.target_auth), self.settings.target_auth)
+        changes: list[str] = []
+        for space in SPACES:
+            if not self.space_enabled(space):
+                continue
+            change = self._reconcile_local_target_locked(registry, space)
+            if change:
+                changes.append(change)
+        return "; ".join(changes) if changes else None
+
+    def _reconcile_local_target_locked(
+        self, registry: dict[str, Any], space: str
+    ) -> str | None:
+        local_target = self._local_target(space)
+        if local_target is None:
+            return None
+        path = self._space_auth_path(space)
+        assert path is not None
+        if not path.exists():
+            return f"{space} auth is missing"
+        config = self._sync_configuration() or SyncConfig(
+            interval_seconds=120,
+            connect_timeout_seconds=5,
+            command_timeout_seconds=15,
+            targets=(local_target,),
+        )
+        try:
+            document = read_target(config, local_target).document
+            target = self._target_entry(document, local_target)
+        except (OpenSwapError, SyncError):
+            desired_uuid = self._local_account_uuid(registry, space)
+            if desired_uuid in registry["accounts"]:
+                try:
+                    self._publish_target_locked(registry, local_target, desired_uuid)
+                except SyncError:
+                    return f"{space} auth is busy; retry scheduled"
+                return f"restored the assigned local {space} account"
+            return f"{space} auth is invalid"
         matched_uuid = None
         expected = fingerprint(target["accountId"])[:16]
         for account_uuid, account in registry["accounts"].items():
             if account.get("account_id_fingerprint") == expected:
                 matched_uuid = account_uuid
                 break
-        desired_uuid = self._local_account_uuid(registry)
+        desired_uuid = self._local_account_uuid(registry, space)
         if matched_uuid is None:
             if desired_uuid in registry["accounts"]:
-                slot = self._read_slot_entry(desired_uuid)
-                self._publish_locked(registry, desired_uuid, slot)
-                return "restored the assigned local account"
-            return "target account is not imported"
+                try:
+                    self._publish_target_locked(registry, local_target, desired_uuid)
+                except SyncError:
+                    return f"{space} auth is busy; retry scheduled"
+                return f"restored the assigned local {space} account"
+            return f"{space} account is not imported"
         if desired_uuid not in registry["accounts"]:
-            registry["default_account"] = matched_uuid
+            registry["defaults"][space] = matched_uuid
             desired_uuid = matched_uuid
         if matched_uuid != desired_uuid:
-            slot = self._read_slot_entry(desired_uuid)
-            self._publish_locked(registry, desired_uuid, slot)
-            return "restored the assigned local account"
+            try:
+                self._publish_target_locked(registry, local_target, desired_uuid)
+            except SyncError:
+                return f"{space} auth is busy; retry scheduled"
+            return f"restored the assigned local {space} account"
         account = registry["accounts"][matched_uuid]
         current_fp = fingerprint(target["access"], target["refresh"])
         if account.get("last_export_fingerprint") == current_fp:
@@ -2024,16 +2235,15 @@ class OpenSwap:
             return None
         if target["expires"] >= slot["expires"]:
             if self.settings.sync is not None:
-                return "newer target credentials are awaiting synchronization"
-            auth = self._read_slot_auth(matched_uuid)
-            auth["tokens"]["access_token"] = target["access"]
-            auth["tokens"]["refresh_token"] = target["refresh"]
-            auth["tokens"]["account_id"] = target["accountId"]
-            auth["last_refresh"] = iso_now()
+                return f"newer {space} credentials are awaiting synchronization"
+            auth = self._canonical_uploaded_auth(document)
             atomic_json(self._codex_home(matched_uuid) / "auth.json", auth)
             account["expires"] = target["expires"]
             account["last_reconciled_at"] = iso_now()
             account["last_export_fingerprint"] = current_fp
             return None
-        self._publish_locked(registry, matched_uuid, slot)
-        return "restored newer central credentials"
+        try:
+            self._publish_target_locked(registry, local_target, matched_uuid)
+        except SyncError:
+            return f"{space} auth is busy; retry scheduled"
+        return f"restored newer central credentials to {space}"

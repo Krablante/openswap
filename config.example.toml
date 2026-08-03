@@ -14,6 +14,9 @@ auth_file = "/home/user/.local/share/opencode/auth.json"
 [codex]
 # A command in PATH or an absolute path to the Codex executable.
 binary = "codex"
+# Optional. Enables the Codex workspace and switches the live Codex CLI login.
+# Codex must use file-based credential storage for this file.
+# auth_file = "~/.codex/auth.json"
 
 [service]
 scheduler_interval_seconds = 60
@@ -27,9 +30,11 @@ scheduler_interval_seconds = 60
 # [[hosts]]
 # name = "local"
 # auth_file = "/home/user/.local/share/opencode/auth.json"
+# codex_auth_file = "~/.codex/auth.json"
 #
 # [[hosts]]
 # name = "server"
 # auth_file = "/home/user/.local/share/opencode/auth.json"
+# codex_auth_file = "~/.codex/auth.json"
 # ssh = "user@server.example"
 # python = "python3"

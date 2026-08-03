@@ -1,8 +1,9 @@
 # Architecture
 
-OpenSwap is a Telegram-oriented control plane for ChatGPT Sessions used by
-OpenCode-compatible clients. It deliberately avoids a management CLI, web
-server, database, configuration generator, and container runtime.
+OpenSwap is a Telegram-oriented control plane for one pool of ChatGPT Sessions
+used independently by OpenCode-compatible clients and Codex CLI. It deliberately
+avoids a management CLI, web server, database, configuration generator, and
+container runtime.
 
 The complete runtime is one Python process:
 
@@ -28,7 +29,9 @@ specific error.
 Relative local paths are resolved from the configuration file. Remote paths are
 kept as remote-native strings and never interpreted by the coordinator's
 operating system. Exactly one host in a multihost configuration must be local
-and use the same file as `[opencode].auth_file`.
+and use the same file as `[opencode].auth_file`. If `[codex].auth_file` is set,
+exactly one local `codex_auth_file` must match it. Remote Codex targets are
+optional.
 
 The configuration is not watched. Restarting is the explicit and only way to
 apply a topology or path change. This keeps runtime state deterministic and
@@ -46,10 +49,11 @@ openswap.lock
 sync.lock
 ```
 
-`registry.json` uses schema 2. It stores Session aliases, safe identity
+`registry.json` uses schema 3. It stores Session aliases, safe identity
 metadata, allowance snapshots, daily token aggregates, fingerprints,
-timestamps, Telegram menu state, one default Session UUID, and sparse host
-overrides. It never stores raw access or refresh tokens, prompts, completions,
+timestamps, Telegram menu state including the selected workspace, one default
+Session UUID per workspace, and sparse host overrides. It never stores raw
+access or refresh tokens, prompts, completions,
 or per-request traces.
 
 Session UUIDs are stable identities used by default routing, sparse target
@@ -59,9 +63,10 @@ normalization assigns them chronologically as `1..N` after deletion and sets
 `next_sequence=N+1`; it never rewrites UUID-based relationships.
 
 Each account slot contains the canonical credential document for one ChatGPT
-account. The live OpenCode `auth.json` and remote target files are published
-views. Only their `openai` entry may be replaced; unrelated providers survive
-unchanged.
+account. Live OpenCode and Codex `auth.json` files are published views. OpenCode
+publication replaces only `openai`. Codex publication replaces only
+`auth_mode`, `OPENAI_API_KEY`, `tokens`, and `last_refresh`; other top-level
+state survives unchanged.
 
 Telegram can export a healthy Session in either canonical Codex CLI shape or a
 standalone OpenCode/OpenCodez document containing only the `openai` entry. The
@@ -79,9 +84,13 @@ Routing is intentionally represented as:
 
 ```json
 {
-  "default_account": "session-uuid",
+  "defaults": {
+    "opencode": "session-uuid-3",
+    "codex": "session-uuid-2"
+  },
   "target_overrides": {
-    "server": "another-session-uuid"
+    "server": "another-session-uuid",
+    "server.codex": "session-uuid-1"
   }
 }
 ```
@@ -89,13 +98,18 @@ Routing is intentionally represented as:
 The effective Session is one lookup:
 
 ```python
-assigned = target_overrides.get(target_name, default_account)
+assigned = target_overrides.get(target_name, defaults[target_kind])
 ```
 
-This preserves the simple “one Session everywhere” behavior while allowing
-explicit exceptions. A new host inherits the default automatically. Selecting
+This preserves the simple “one Session everywhere in this client” behavior
+while allowing explicit exceptions. OpenCode and Codex defaults never affect
+each other. A new host inherits its workspace default automatically. Selecting
 the default for a host removes its redundant override. A Session cannot be
-deleted while it is the default or assigned to any host.
+deleted while it is a default or assigned in either workspace.
+
+Schema 2 migrates in memory on first load: its `default_account` becomes both
+`defaults.opencode` and `defaults.codex`, so enabling Codex initially mirrors the
+existing choice without changing OpenCode routing.
 
 With one configured host, Telegram hides host navigation and uses the effective
 target assignment as the active Session. Selecting a Session updates the
@@ -112,8 +126,14 @@ The root contains Session rows, a compact combined token summary, `Add`,
 `Refresh`, and the bottom navigation:
 
 - `Token activity` occupies a separate full-width row when Sessions exist;
-- multihost: `System` is left and `Hosts` is right on the final row;
-- single-host: `System` occupies the full final row.
+- multihost: `System` is left and `Hosts` is right on the navigation row;
+- single-host: `System` occupies the full navigation row.
+
+When `[codex].auth_file` is configured, one final workspace button switches the
+root between `🔵 opencode` and `🟣 codex`. The same account-level views are
+reused. Active markers, Hosts, default actions, and System target health are
+computed for the selected workspace only. Pending login/import flows hide the
+switch so their state cannot be confused with routing.
 
 Session buttons contain only Session identity, usage/reset countdown, stale
 state, and earned reset credits. The `Hosts → host` picker reuses the same
@@ -207,15 +227,16 @@ forces collection; failed collection preserves the previous cache and marks it
 stale.
 
 Credentials are read once per unique assigned Session during a reconciliation
-pass, not once per host. Targets are rewritten only when the assigned OpenAI
-fingerprint differs.
+pass, not once per host. Adding the Codex workspace adds only one local file
+read/write and any explicitly configured remote Codex targets. Targets are
+rewritten only when the assigned OAuth fingerprint differs.
 
 ## Local publication
 
-Local publication performs:
+Local publication for both target kinds performs:
 
 1. a bounded read of the current `auth.json`;
-2. replacement of only the `openai` entry;
+2. target-specific replacement of `openai` or the four managed Codex fields;
 3. JSON serialization to a temporary file in the same directory;
 4. file flush and `fsync`;
 5. one final compare-and-swap digest check;
@@ -239,8 +260,8 @@ ssh ... destination python -
 The bounded Python program is sent through stdin. Paths and credentials are
 embedded as Python literals/base64 data rather than shell arguments, avoiding
 POSIX-versus-Windows quoting branches. The remote program applies the same
-size, JSON, compare-and-swap, flush, atomic replacement, and platform-specific
-permission rules as local storage.
+kind-aware merge, size, JSON, compare-and-swap, flush, atomic replacement, and
+platform-specific permission rules as local storage.
 
 Exit code `75` means the file changed during publication. OpenSwap records
 `busy · retry scheduled` and waits for the normal sync interval rather than
@@ -272,6 +293,12 @@ Each Session receives an isolated Codex home. Login imports only canonical
 Codex fields or a compatible OpenCode `openai` OAuth entry. Credentials are
 validated against ChatGPT account identity before entering an account slot.
 
+The optional live Codex target is distinct from these isolated homes. Codex
+documents file credentials under `CODEX_HOME/auth.json` (normally
+`~/.codex/auth.json`); OpenSwap manages that published view only when
+`codex.auth_file` is explicit. Keychain-backed credentials are outside this
+file-based switching contract.
+
 Refresh uses the same isolation and accepts a new token generation only when
 its account ID matches the slot. A rejected refresh marks the Session as
 requiring login without changing aliases or routing.
@@ -295,7 +322,7 @@ The important failure rules are:
 
 - malformed or oversized credential documents are rejected;
 - exports require an allowlisted private chat and an explicit format choice;
-- unknown provider entries are preserved;
+- unmanaged provider entries and top-level fields are preserved;
 - account identity mismatch never changes a slot;
 - a changed target is never overwritten blindly;
 - one offline host does not block other targets;

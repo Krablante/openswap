@@ -16,6 +16,7 @@ Requirements:
 - Python 3.11 or newer;
 - the official Codex CLI in `PATH`, or its absolute executable path;
 - OpenCode or an `auth.json`-compatible client;
+- optional file-backed Codex CLI credentials for the Codex workspace;
 - optional OpenSSH and Python on remote hosts for multihost operation.
 
 Create a virtual environment:
@@ -91,10 +92,14 @@ Codex:
 ```toml
 [codex]
 binary = "codex"
+auth_file = "~/.codex/auth.json"
 ```
 
 An absolute path is also accepted. OpenSwap checks the Codex version in the
-System screen but does not install or update the executable.
+System screen but does not install or update the executable. `auth_file` is
+optional and enables the Codex workspace. Configure Codex itself with
+`cli_auth_credentials_store = "file"`; keychain-backed credentials do not use
+this file and cannot be switched by OpenSwap.
 
 ## Starting and stopping
 
@@ -127,6 +132,12 @@ continue in the same output.
 `/start` creates or replaces the single OpenSwap menu. Session rows open account
 details and actions.
 
+The root header identifies `🔵 opencode` or `🟣 codex`. The last button switches
+workspaces without duplicating the Session pool or account tools. Each workspace
+keeps its own active/default Session. Hosts and System show only the selected
+workspace, while login, import, export, allowance, reset, and token activity
+remain shared.
+
 Session buttons never include host counts. In a true multihost, multi-Session
 deployment, the root text contains a `Host assignments` block listing only
 Sessions with one or more assigned hosts. The block is intentionally absent for
@@ -152,7 +163,8 @@ The bot supports:
 - English and Russian interfaces;
 - System health and synchronization retry.
 
-Deleting an unassigned, non-default Session compacts the remaining display
+Deleting a Session that is unassigned and not a default in either workspace
+compacts the remaining display
 numbers immediately. This changes labels only; UUID-based routing and credential
 directories are preserved.
 
@@ -166,7 +178,7 @@ Session before sending the document. The file grants account access: move it to
 the intended credential location, restrict its permissions, and delete the
 Telegram message after use.
 
-The screen reports OpenCode validity, Codex availability, storage integrity,
+The screen reports selected-client validity, Codex availability, storage integrity,
 healthy Sessions, and target convergence. `Retry sync` wakes the scheduler and
 returns immediately.
 
@@ -187,7 +199,7 @@ Collection is sequential and does not hold the registry lock while Codex runs.
 
 ## Multihost configuration
 
-The local target must match `[opencode].auth_file` exactly:
+The local OpenCode target must match `[opencode].auth_file` exactly:
 
 ```toml
 [sync]
@@ -198,10 +210,12 @@ command_timeout_seconds = 15
 [[hosts]]
 name = "local"
 auth_file = "/home/user/.local/share/opencode/auth.json"
+codex_auth_file = "~/.codex/auth.json"
 
 [[hosts]]
 name = "server"
 auth_file = "/home/user/.local/share/opencode/auth.json"
+codex_auth_file = "~/.codex/auth.json"
 ssh = "user@server.example"
 python = "python3"
 ```
@@ -212,6 +226,11 @@ Remote requirements:
 - a Python command declared by `python`;
 - permission to read and replace the configured file;
 - no interactive shell setup required by the SSH session.
+
+When `[codex].auth_file` is set, the local host must declare a matching
+`codex_auth_file`. Remote hosts may omit it. Internally Codex target IDs add the
+`.codex` suffix, but Telegram shows the original host name inside the Codex
+workspace.
 
 Use `python = "python"` for a Windows remote when appropriate. Remote paths are
 interpreted by that remote Python process, not the coordinator.
@@ -246,7 +265,7 @@ data/accounts/<Session UUID>/auth.json
 ```
 
 After restoration, start OpenSwap and use System → Retry sync. The canonical
-Session slots rebuild the local and reachable remote OpenCode views.
+Session slots rebuild the local and reachable remote OpenCode and Codex views.
 
 ## Troubleshooting
 
@@ -255,6 +274,8 @@ Session slots rebuild the local and reachable remote OpenCode views.
 Read the console error. Common causes are a missing table, unknown key, invalid
 user ID, relative remote path, duplicate host name, or a local host that does
 not match `[opencode].auth_file`.
+When the Codex workspace is enabled, a missing local `codex_auth_file` match is
+also a startup error.
 
 ### Codex is unavailable
 
@@ -267,6 +288,13 @@ open System again.
 The bot can create the OpenAI entry when the first Session becomes active. If
 the configured path is wrong, correct it and restart rather than creating a
 second configuration.
+
+### Codex keeps using another login
+
+Confirm that `[codex].auth_file` points to the `auth.json` in the same
+`CODEX_HOME` used by the CLI and that Codex has
+`cli_auth_credentials_store = "file"`. Restart OpenSwap after changing the
+path. A keyring-backed login does not read the managed file.
 
 ### A Session requires login
 
@@ -310,7 +338,7 @@ OpenSwap. Correct `config.toml`, restart, and use System → Retry sync.
 
 ### A host is busy
 
-OpenCode changed the target during publication. The compare-and-swap guard
+The managed client changed its target during publication. The compare-and-swap guard
 prevented an overwrite. Allow the configured interval to retry, or stop the
 competing writer briefly and press Retry sync.
 

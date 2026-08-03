@@ -1,3 +1,3 @@
-"""OpenSwap: lightweight ChatGPT session manager for OpenCode-compatible auth."""
+"""OpenSwap: lightweight ChatGPT Session routing for OpenCode and Codex CLI."""
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"

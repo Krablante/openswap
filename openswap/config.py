@@ -65,8 +65,18 @@ def load_config(path: Path | None = None) -> AppConfig:
     target_auth = _path(base, _string(opencode, "auth_file"))
 
     codex = _table(document, "codex")
-    _reject_unknown(codex, {"binary"}, "codex")
+    _reject_unknown(codex, {"binary", "auth_file"}, "codex")
     codex_binary = _command_or_path(base, _string(codex, "binary"))
+    codex_auth_value = codex.get("auth_file")
+    if codex_auth_value is not None and (
+        not isinstance(codex_auth_value, str) or not codex_auth_value.strip()
+    ):
+        raise ConfigError("codex.auth_file must be a non-empty string")
+    codex_auth = (
+        _path(base, codex_auth_value.strip())
+        if isinstance(codex_auth_value, str)
+        else None
+    )
 
     service = _optional_table(document, "service")
     _reject_unknown(service, {"scheduler_interval_seconds"}, "service")
@@ -81,23 +91,42 @@ def load_config(path: Path | None = None) -> AppConfig:
     hosts_raw = document.get("hosts", [])
     if not isinstance(hosts_raw, list):
         raise ConfigError("hosts must be an array of tables")
-    sync_config = _sync_config(base, sync_table, hosts_raw) if hosts_raw else None
+    sync_config = (
+        _sync_config(base, sync_table, hosts_raw, codex_auth)
+        if hosts_raw
+        else None
+    )
     if sync_config is not None:
         local_targets = [
             target
             for target in sync_config.targets
-            if target.ssh is None and target.path == target_auth
+            if target.kind == "opencode"
+            and target.ssh is None
+            and target.path == target_auth
         ]
         if len(local_targets) != 1:
             raise ConfigError(
                 "hosts must contain exactly one local entry whose auth_file matches opencode.auth_file"
             )
+        if codex_auth is not None:
+            local_codex_targets = [
+                target
+                for target in sync_config.targets
+                if target.kind == "codex"
+                and target.ssh is None
+                and target.path == codex_auth
+            ]
+            if len(local_codex_targets) != 1:
+                raise ConfigError(
+                    "hosts must contain exactly one local codex_auth_file matching codex.auth_file"
+                )
 
     return AppConfig(
         path=config_path,
         core=Settings(
             state_dir=state_dir,
             target_auth=target_auth,
+            codex_auth=codex_auth,
             codex_bin=codex_binary,
             sync=sync_config,
             usage_stale_seconds=scheduler_interval * 3,
@@ -110,13 +139,22 @@ def load_config(path: Path | None = None) -> AppConfig:
     )
 
 
-def _sync_config(base: Path, table: dict[str, Any], hosts: list[Any]) -> SyncConfig:
+def _sync_config(
+    base: Path,
+    table: dict[str, Any],
+    hosts: list[Any],
+    codex_auth: Path | None,
+) -> SyncConfig:
     targets: list[SyncTarget] = []
     seen: set[str] = set()
     for index, raw in enumerate(hosts):
         if not isinstance(raw, dict):
             raise ConfigError(f"hosts[{index}] must be a table")
-        _reject_unknown(raw, {"name", "auth_file", "ssh", "python"}, f"hosts[{index}]")
+        _reject_unknown(
+            raw,
+            {"name", "auth_file", "codex_auth_file", "ssh", "python"},
+            f"hosts[{index}]",
+        )
         name = _string(raw, "name")
         if not SAFE_NAME.fullmatch(name) or len(name) > 32 or name in seen:
             raise ConfigError(
@@ -137,10 +175,42 @@ def _sync_config(base: Path, table: dict[str, Any], hosts: list[Any]) -> SyncCon
                     if ssh is not None
                     else _path(base, _string(raw, "auth_file"))
                 ),
+                kind="opencode",
+                label=name,
                 ssh=ssh,
                 python=python,
             )
         )
+        codex_value = raw.get("codex_auth_file")
+        if codex_value is not None:
+            if codex_auth is None:
+                raise ConfigError(
+                    f"hosts[{index}].codex_auth_file requires codex.auth_file"
+                )
+            if not isinstance(codex_value, str) or not codex_value.strip():
+                raise ConfigError(
+                    f"hosts[{index}].codex_auth_file must be a non-empty string"
+                )
+            target_name = f"{name}.codex"
+            if target_name in seen:
+                raise ConfigError(
+                    f"hosts[{index}].codex_auth_file creates duplicate target {target_name}"
+                )
+            seen.add(target_name)
+            targets.append(
+                SyncTarget(
+                    name=target_name,
+                    path=(
+                        _remote_path(codex_value.strip(), index, "codex_auth_file")
+                        if ssh is not None
+                        else _path(base, codex_value.strip())
+                    ),
+                    kind="codex",
+                    label=name,
+                    ssh=ssh,
+                    python=python,
+                )
+            )
     return SyncConfig(
         interval_seconds=_integer(table, "interval_seconds", 120, minimum=10),
         connect_timeout_seconds=_integer(table, "connect_timeout_seconds", 5, minimum=1),
@@ -188,12 +258,12 @@ def _command_or_path(base: Path, value: str) -> Path:
     return Path(value)
 
 
-def _remote_path(value: str, index: int) -> str:
+def _remote_path(value: str, index: int, field: str = "auth_file") -> str:
     if value.startswith(("/", "~/", "\\\\")) or re.match(
         r"^[A-Za-z]:[\\/]", value
     ):
         return value
-    raise ConfigError(f"hosts[{index}].auth_file must be an absolute remote path")
+    raise ConfigError(f"hosts[{index}].{field} must be an absolute remote path")
 
 
 def _reject_unknown(table: dict[str, Any], allowed: set[str], label: str) -> None:
