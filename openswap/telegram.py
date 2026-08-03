@@ -84,6 +84,31 @@ def _host_count_label(count: int, language: str) -> str:
     return f"{count} {noun}"
 
 
+def _assigned_host_labels(sync: dict[str, Any]) -> dict[str, list[str]]:
+    assignments: dict[str, list[str]] = {}
+    targets = sync.get("targets")
+    if not isinstance(targets, list):
+        return assignments
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        account_id = target.get("account_id")
+        label = target.get("label") or target.get("name")
+        if isinstance(account_id, str) and isinstance(label, str) and label:
+            assignments.setdefault(account_id, []).append(label)
+    return assignments
+
+
+def _host_assignment_line(
+    account: dict[str, Any], hosts: list[str], language: str
+) -> str:
+    labels = ", ".join(html.escape(host) for host in hosts)
+    return (
+        f"• 👤 {html.escape(account_name(account))} · "
+        f"{_host_count_label(len(hosts), language)} ({labels})"
+    )
+
+
 def _pending_label(language: str, error: Any, *, icon: bool = False) -> str:
     prefix = "↻ " if icon else ""
     if error:
@@ -2099,10 +2124,11 @@ class TelegramBot:
                         f" · 🔀 {_pick(language, 'overrides', 'индивидуально')}: <b>{sync.get('override_count', 0)}</b>"
                     )
                     if len(accounts) > 1:
+                        assigned_hosts = _assigned_host_labels(sync)
                         assignments = [
-                            account
+                            (account, assigned_hosts.get(account["id"], []))
                             for account in accounts
-                            if int(account.get("target_count") or 0) > 0
+                            if assigned_hosts.get(account["id"])
                         ]
                         if assignments:
                             lines.extend(
@@ -2112,9 +2138,8 @@ class TelegramBot:
                                 ]
                             )
                             lines.extend(
-                                f"• 👤 {html.escape(account_name(account))} · "
-                                f"{_host_count_label(int(account.get('target_count') or 0), language)}"
-                                for account in assignments
+                                _host_assignment_line(account, hosts, language)
+                                for account, hosts in assignments
                             )
             overview = token_overview
             if overview["available"]:

@@ -140,8 +140,9 @@ remain shared.
 
 Session buttons never include host counts. In a true multihost, multi-Session
 deployment, the root text contains a `Host assignments` block listing only
-Sessions with one or more assigned hosts. The block is intentionally absent for
-one Session or one host.
+Sessions with one or more assigned hosts. Each row includes the assigned host
+names in parentheses. The block is intentionally absent for one Session or one
+host.
 
 The per-host Session picker (`Hosts → host`) shows the same compact usage
 buttons as the root menu; the Session currently in effect for that host is

@@ -151,8 +151,9 @@ The root screen shows Sessions as compact buttons with remaining allowance,
 reset countdown, and earned reset credits. Selecting a Session opens its
 details and actions. Host distribution never appears inside a Session button;
 with several Sessions and several hosts it is rendered as a separate
-`🖥 Host assignments` text block. The block is omitted for one Session or one
-host because it would only repeat the active/default state.
+`🖥 Host assignments` text block with each count followed by the assigned host
+names in parentheses. The block is omitted for one Session or one host because
+it would only repeat the active/default state.
 
 Session numbers are compact display labels, not identities. Deleting a Session
 immediately renumbers the remaining labels without gaps (`1, 3` becomes `1,
@@ -185,7 +186,7 @@ remaining allowance, or host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.4.1
+OpenSwap 2.4.2
 
 ✓ 🔐 Codex CLI · ready
 ✓ 🤖 Codex · codex-cli 0.x.x

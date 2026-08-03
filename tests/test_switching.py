@@ -12,7 +12,11 @@ from unittest import mock
 from openswap.core import OpenSwap, Settings, fingerprint, read_json
 from openswap.storage import atomic_json
 from openswap.sync import SyncConfig, SyncTarget
-from openswap.telegram import TelegramBot
+from openswap.telegram import (
+    TelegramBot,
+    _assigned_host_labels,
+    _host_assignment_line,
+)
 
 
 def _jwt(account_id: str) -> str:
@@ -168,6 +172,29 @@ class WorkspaceSwitchingTest(unittest.TestCase):
         )
         actions = [button["callback_data"] for row in details for button in row]
         self.assertIn(f"use:{self.session_ids[1]}", actions)
+
+    def test_host_assignments_include_names_in_parentheses(self) -> None:
+        sync = {
+            "targets": [
+                {"account_id": self.session_ids[0], "label": "nuc"},
+                {"account_id": self.session_ids[0], "label": "ser"},
+                {"account_id": self.session_ids[1], "label": "rtx"},
+            ]
+        }
+        assignments = _assigned_host_labels(sync)
+        self.assertEqual(assignments[self.session_ids[0]], ["nuc", "ser"])
+        self.assertEqual(
+            _host_assignment_line(
+                {"name": "Session 1"}, assignments[self.session_ids[0]], "en"
+            ),
+            "• 👤 Session 1 · 2 hosts (nuc, ser)",
+        )
+        self.assertEqual(
+            _host_assignment_line(
+                {"name": "Session 1"}, assignments[self.session_ids[0]], "ru"
+            ),
+            "• 👤 Session 1 · 2 хоста (nuc, ser)",
+        )
 
 
 if __name__ == "__main__":
