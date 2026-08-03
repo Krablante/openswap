@@ -43,8 +43,8 @@ The configured storage directory contains:
 
 ```text
 registry.json
-accounts/<Session UUID>/auth.json
-accounts/<Session UUID>/codex-home/
+accounts/<Session UUID>/codex-home/auth.json
+accounts/<Session UUID>/codex-home/config.toml
 openswap.lock
 sync.lock
 ```

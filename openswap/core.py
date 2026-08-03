@@ -306,10 +306,6 @@ class OpenSwap:
         self.initialize()
         return exclusive_lock(self.lock_path)
 
-    def import_opencode(self, source: Path) -> AuthImportResult:
-        source = source.expanduser().resolve()
-        return self.import_auth_document(read_json(source))
-
     def import_auth_document(self, document: Any) -> AuthImportResult:
         codex_auth = self._canonical_uploaded_auth(document)
         account_uuid, codex_home = self.begin_pending_account()
@@ -423,40 +419,6 @@ class OpenSwap:
                 "accountId": tokens["account_id"],
             }
         }
-
-    def add_account(self, *, browser: bool = False) -> dict[str, Any]:
-        account_uuid = str(uuid.uuid4())
-        codex_home = self._codex_home(account_uuid)
-        with self.locked():
-            self._load_registry()
-            self._prepare_codex_home(codex_home)
-        try:
-            self.codex.login(codex_home, browser=browser)
-            snapshot = self._inspect_slot(
-                account_uuid, refresh=True, include_limits=True
-            )
-            token = self._read_slot_entry(account_uuid)
-            with self.locked():
-                registry = self._load_registry()
-                existing = self._find_account_by_external_id(
-                    registry, token["accountId"]
-                )
-                if existing:
-                    raise OpenSwapError(
-                        f"this ChatGPT account is already stored as {account_name(existing)}"
-                    )
-                account = self._new_account(
-                    account_uuid,
-                    self._allocate_sequence(registry),
-                    token,
-                    snapshot,
-                )
-                registry["accounts"][account_uuid] = account
-                self._save_registry(registry)
-                return account
-        except BaseException:
-            shutil.rmtree(self._account_dir(account_uuid), ignore_errors=True)
-            raise
 
     def begin_pending_account(self) -> tuple[str, Path]:
         account_uuid = str(uuid.uuid4())
@@ -686,13 +648,6 @@ class OpenSwap:
             self._save_registry(registry)
             return removed
 
-    def target_override_count(self, space: str = "opencode") -> int:
-        self._validate_space(space)
-        with self.locked():
-            overrides = self._load_registry()["target_overrides"]
-            names = self._space_target_names(space)
-            return sum(name in names for name in overrides)
-
     def refresh(self, selector: str, *, include_limits: bool = True) -> dict[str, Any]:
         with self.locked():
             registry = self._load_registry()
@@ -713,16 +668,6 @@ class OpenSwap:
                 self._propagate_account_locked(registry, account_uuid)
             self._save_registry(registry)
             return dict(registry["accounts"][account_uuid])
-
-    def refresh_all(self) -> list[dict[str, Any]]:
-        accounts, _ = self.accounts()
-        refreshed = []
-        for account in accounts:
-            if account.get("last_error") == "login required":
-                refreshed.append(account)
-                continue
-            refreshed.append(self.refresh(account["id"]))
-        return refreshed
 
     def refresh_scheduler_data(
         self, *, max_age_seconds: int, source: str = "scheduler"
@@ -897,26 +842,6 @@ class OpenSwap:
                 self._propagate_account_locked(registry, account_uuid)
             self._save_registry(registry)
             return dict(registry["accounts"][account_uuid]), outcome
-
-    def status(self, space: str = "opencode") -> dict[str, Any]:
-        self._validate_space(space)
-        with self.locked():
-            registry = self._load_registry()
-            drift = self._reconcile_locked(registry)
-            self._save_registry(registry)
-            default_account = registry["defaults"].get(space)
-            return {
-                "accounts": len(registry["accounts"]),
-                "default": (
-                    account_name(registry["accounts"][default_account])
-                    if default_account in registry["accounts"]
-                    else None
-                ),
-                "drift": drift,
-                "target": str(self._space_auth_path(space) or ""),
-                "state": str(self.settings.state_dir),
-                "sync": self._sync_summary(registry, space=space),
-            }
 
     def sync_targets(self, *, force: bool = True) -> dict[str, Any]:
         config = self._sync_configuration()

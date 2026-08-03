@@ -255,13 +255,13 @@ data/
 ```
 
 Treat the backup as a secret. `config.toml` contains the Telegram token, and
-`data/accounts/*/auth.json` contains live OAuth credentials.
+`data/accounts/*/codex-home/auth.json` contains live OAuth credentials.
 
 The important state files are:
 
 ```text
 data/registry.json
-data/accounts/<Session UUID>/auth.json
+data/accounts/<Session UUID>/codex-home/auth.json
 ```
 
 After restoration, start OpenSwap and use System → Retry sync. The canonical

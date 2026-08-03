@@ -335,18 +335,6 @@ class CodexClient:
             raise CodexError(f"cannot run Codex: {exc}") from exc
         return result.stdout.strip()
 
-    def login(self, codex_home: Path, *, browser: bool = False) -> None:
-        command = self._command("login")
-        if not browser:
-            command.append("--device-auth")
-        env = self._environment(codex_home)
-        try:
-            result = subprocess.run(command, env=env, check=False)
-        except OSError as exc:
-            raise CodexError(f"cannot start Codex login: {exc}") from exc
-        if result.returncode != 0:
-            raise CodexError(f"Codex login exited with status {result.returncode}")
-
     def logout(self, codex_home: Path) -> None:
         try:
             result = subprocess.run(
