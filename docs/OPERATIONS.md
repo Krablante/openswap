@@ -132,9 +132,10 @@ continue in the same output.
 `/start` creates or replaces the single OpenSwap menu. Session rows open account
 details and actions.
 
-The root header identifies `🔵 opencode` or `🟣 codex`. The last button switches
-workspaces without duplicating the Session pool or account tools. Each workspace
-keeps its own active/default Session. Hosts and System show only the selected
+The root header identifies `🔵 opencode` or `🟣 codex` and labels the count as
+`shared sessions`. The last button switches workspaces without duplicating the
+Session pool or account tools. Each workspace keeps its own active/default
+Session. Hosts and System show only the selected
 workspace, while login, import, export, allowance, reset, and token activity
 remain shared.
 
@@ -210,8 +211,6 @@ command_timeout_seconds = 15
 
 [[hosts]]
 name = "local"
-auth_file = "/home/user/.local/share/opencode/auth.json"
-codex_auth_file = "~/.codex/auth.json"
 
 [[hosts]]
 name = "server"
@@ -228,10 +227,13 @@ Remote requirements:
 - permission to read and replace the configured file;
 - no interactive shell setup required by the SSH session.
 
-When `[codex].auth_file` is set, the local host must declare a matching
-`codex_auth_file`. Remote hosts may omit it. Internally Codex target IDs add the
-`.codex` suffix, but Telegram shows the original host name inside the Codex
-workspace.
+The one host without `ssh` is local. Its endpoints are derived from the top-level
+`[opencode].auth_file` and optional `[codex].auth_file`; repeating either path is
+unnecessary. Explicit local values are still accepted during upgrades but must
+match. Remote hosts must declare `auth_file` and may omit `codex_auth_file`.
+Schema-3 persists a Codex endpoint as `host.codex`, but this is only the stable
+serialization of the host/workspace pair. Telegram shows the physical host name
+and all endpoints continue to reference the one shared Session pool.
 
 Use `python = "python"` for a Windows remote when appropriate. Remote paths are
 interpreted by that remote Python process, not the coordinator.
@@ -273,10 +275,8 @@ Session slots rebuild the local and reachable remote OpenCode and Codex views.
 ### The process exits before Telegram starts
 
 Read the console error. Common causes are a missing table, unknown key, invalid
-user ID, relative remote path, duplicate host name, or a local host that does
-not match `[opencode].auth_file`.
-When the Codex workspace is enabled, a missing local `codex_auth_file` match is
-also a startup error.
+user ID, relative remote path, duplicate host name, more than one local host, or
+an explicitly repeated local endpoint that does not match its top-level path.
 
 ### Codex is unavailable
 

@@ -9,14 +9,16 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-from openswap.core import OpenSwap, Settings, fingerprint, read_json
-from openswap.storage import atomic_json
-from openswap.sync import SyncConfig, SyncTarget
-from openswap.telegram import (
-    TelegramBot,
-    _assigned_host_labels,
-    _host_assignment_line,
+from openswap.core import (
+    OpenSwap,
+    Settings,
+    WorkspaceSnapshot,
+    fingerprint,
+    read_json,
 )
+from openswap.storage import atomic_json
+from openswap.sync import SyncConfig, SyncTarget, Workspace
+from openswap.telegram import TelegramBot, _host_assignment_line
 
 
 def _jwt(account_id: str) -> str:
@@ -63,11 +65,15 @@ class WorkspaceSwitchingTest(unittest.TestCase):
                     connect_timeout_seconds=5,
                     command_timeout_seconds=15,
                     targets=(
-                        SyncTarget(name="local", path=self.opencode_auth),
                         SyncTarget(
-                            name="local.codex",
+                            host="local",
+                            workspace=Workspace.OPENCODE,
+                            path=self.opencode_auth,
+                        ),
+                        SyncTarget(
+                            host="local",
+                            workspace=Workspace.CODEX,
                             path=self.codex_auth,
-                            kind="codex",
                         ),
                     ),
                 ),
@@ -141,48 +147,49 @@ class WorkspaceSwitchingTest(unittest.TestCase):
             {"id": session_id, "name": f"Session {index}", "last_error": None}
             for index, session_id in enumerate(self.session_ids, start=1)
         ]
+        snapshot = WorkspaceSnapshot(
+            workspace=Workspace.CODEX,
+            accounts=tuple(accounts),
+            default_account=self.session_ids[0],
+            sync={
+                "enabled": True,
+                "total": 1,
+                "targets": [{"account_id": self.session_ids[0]}],
+            },
+            host_assignments={self.session_ids[0]: ("local",)},
+        )
         keyboard = TelegramBot._menu_keyboard(
-            accounts,
-            self.session_ids[0],
+            snapshot,
             None,
             None,
             None,
             False,
             False,
             None,
-            {"enabled": True, "total": 1, "targets": [{"account_id": self.session_ids[0]}]},
             "en",
-            "codex",
         )
         self.assertEqual(keyboard[1][0]["callback_data"], f"open:{self.session_ids[1]}")
         self.assertEqual(len(keyboard[1]), 1)
 
         details = TelegramBot._menu_keyboard(
-            accounts,
-            self.session_ids[0],
+            snapshot,
             None,
             None,
             None,
             False,
             False,
             self.session_ids[1],
-            {"enabled": True, "total": 1, "targets": [{"account_id": self.session_ids[0]}]},
             "en",
-            "codex",
         )
         actions = [button["callback_data"] for row in details for button in row]
         self.assertIn(f"use:{self.session_ids[1]}", actions)
 
     def test_host_assignments_include_names_in_parentheses(self) -> None:
-        sync = {
-            "targets": [
-                {"account_id": self.session_ids[0], "label": "nuc"},
-                {"account_id": self.session_ids[0], "label": "ser"},
-                {"account_id": self.session_ids[1], "label": "rtx"},
-            ]
+        assignments = {
+            self.session_ids[0]: ("nuc", "ser"),
+            self.session_ids[1]: ("rtx",),
         }
-        assignments = _assigned_host_labels(sync)
-        self.assertEqual(assignments[self.session_ids[0]], ["nuc", "ser"])
+        self.assertEqual(assignments[self.session_ids[0]], ("nuc", "ser"))
         self.assertEqual(
             _host_assignment_line(
                 {"name": "Session 1"}, assignments[self.session_ids[0]], "en"

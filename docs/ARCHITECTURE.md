@@ -28,14 +28,35 @@ specific error.
 
 Relative local paths are resolved from the configuration file. Remote paths are
 kept as remote-native strings and never interpreted by the coordinator's
-operating system. Exactly one host in a multihost configuration must be local
-and use the same file as `[opencode].auth_file`. If `[codex].auth_file` is set,
-exactly one local `codex_auth_file` must match it. Remote Codex targets are
-optional.
+operating system. Exactly one host in a multihost configuration must be local.
+Its endpoints are derived from `[opencode].auth_file` and the optional
+`[codex].auth_file`, so an operator does not repeat those paths. Explicit local
+host paths remain accepted for compatibility and must match. Remote OpenCode
+endpoints are required; remote Codex endpoints are optional.
 
 The configuration is not watched. Restarting is the explicit and only way to
 apply a topology or path change. This keeps runtime state deterministic and
 eliminates partial reloads.
+
+## Runtime domain model
+
+There is one `Workspace` type with two values, `opencode` and `codex`. A sync
+endpoint is the combination of one physical host, one workspace, one path, and
+an optional SSH transport. The schema-3 keys `host` and `host.codex` are only
+the stable serialization of that pair; they do not represent separate Session
+stores.
+
+Credential codecs own the two published document shapes. They convert one
+canonical Codex-shaped Session slot into either the OpenCode `openai` entry or
+the four managed Codex fields, and can normalize either published shape for
+identity verification. The local/SSH transport receives an already merged JSON
+document and therefore contains no client-specific branches.
+
+Telegram reads a `WorkspaceSnapshot` assembled under one registry lock. The
+snapshot contains Session views, the selected workspace default, target health,
+effective single-host selection, and precomputed host assignments. Rendering is
+read-only: opening or refreshing a menu cannot reconcile or rewrite the
+registry. Reconciliation belongs only to explicit mutations and the scheduler.
 
 ## State and credentials
 
@@ -67,6 +88,10 @@ account. Live OpenCode and Codex `auth.json` files are published views. OpenCode
 publication replaces only `openai`. Codex publication replaces only
 `auth_mode`, `OPENAI_API_KEY`, `tokens`, and `last_refresh`; other top-level
 state survives unchanged.
+
+The account directories are the only authoritative credential pool. Workspace
+defaults, target overrides, Telegram views, and published files all reference
+the same permanent Session UUIDs. No workspace owns a second copy of the pool.
 
 Telegram can export a healthy Session in either canonical Codex CLI shape or a
 standalone OpenCode/OpenCodez document containing only the `openai` entry. The
@@ -101,6 +126,11 @@ The effective Session is one lookup:
 assigned = target_overrides.get(target_name, defaults[target_kind])
 ```
 
+`target_name` is the persisted endpoint key and `target_kind` is the serialized
+workspace value. Runtime code uses the typed host/workspace pair and converts to
+these strings only at the registry boundary, preserving schema-3 compatibility
+without a credential migration.
+
 This preserves the simple “one Session everywhere in this client” behavior
 while allowing explicit exceptions. OpenCode and Codex defaults never affect
 each other. A new host inherits its workspace default automatically. Selecting
@@ -121,6 +151,9 @@ default and clears stale overrides atomically. With several hosts, the
 Telegram is the only management interface. One editable message represents the
 current view. `/start` replaces an old menu; `/language` opens the language
 selector and removes its command message.
+
+The root explicitly says `shared sessions` / `общих сессий` to distinguish the
+single account pool from the currently selected publishing workspace.
 
 The root contains Session rows, a compact combined token summary, `Add`,
 `Refresh`, and the bottom navigation:

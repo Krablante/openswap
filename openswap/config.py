@@ -8,7 +8,7 @@ from typing import Any
 
 from .core import Settings
 from .storage import secure_file
-from .sync import SAFE_NAME, SAFE_SSH, SyncConfig, SyncTarget
+from .sync import SAFE_NAME, SAFE_SSH, SyncConfig, SyncTarget, Workspace
 from .telegram import TelegramSettings
 
 
@@ -92,7 +92,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     if not isinstance(hosts_raw, list):
         raise ConfigError("hosts must be an array of tables")
     sync_config = (
-        _sync_config(base, sync_table, hosts_raw, codex_auth)
+        _sync_config(base, sync_table, hosts_raw, target_auth, codex_auth)
         if hosts_raw
         else None
     )
@@ -100,7 +100,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         local_targets = [
             target
             for target in sync_config.targets
-            if target.kind == "opencode"
+            if target.workspace is Workspace.OPENCODE
             and target.ssh is None
             and target.path == target_auth
         ]
@@ -112,7 +112,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             local_codex_targets = [
                 target
                 for target in sync_config.targets
-                if target.kind == "codex"
+                if target.workspace is Workspace.CODEX
                 and target.ssh is None
                 and target.path == codex_auth
             ]
@@ -143,10 +143,12 @@ def _sync_config(
     base: Path,
     table: dict[str, Any],
     hosts: list[Any],
+    target_auth: Path,
     codex_auth: Path | None,
 ) -> SyncConfig:
     targets: list[SyncTarget] = []
-    seen: set[str] = set()
+    seen_hosts: set[str] = set()
+    seen_targets: set[str] = set()
     for index, raw in enumerate(hosts):
         if not isinstance(raw, dict):
             raise ConfigError(f"hosts[{index}] must be a table")
@@ -156,33 +158,55 @@ def _sync_config(
             f"hosts[{index}]",
         )
         name = _string(raw, "name")
-        if not SAFE_NAME.fullmatch(name) or len(name) > 32 or name in seen:
+        if (
+            not SAFE_NAME.fullmatch(name)
+            or len(name) > 32
+            or name in seen_hosts
+        ):
             raise ConfigError(
                 f"hosts[{index}].name must be unique, at most 32 characters, and use ASCII letters, digits, dot, underscore, or hyphen"
             )
-        seen.add(name)
+        seen_hosts.add(name)
         ssh = raw.get("ssh")
         if ssh is not None and (not isinstance(ssh, str) or not SAFE_SSH.fullmatch(ssh)):
             raise ConfigError(f"hosts[{index}].ssh is invalid")
         python = raw.get("python", "python3")
         if not isinstance(python, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", python):
             raise ConfigError(f"hosts[{index}].python is invalid")
-        targets.append(
-            SyncTarget(
-                name=name,
-                path=(
-                    _remote_path(_string(raw, "auth_file"), index)
-                    if ssh is not None
-                    else _path(base, _string(raw, "auth_file"))
-                ),
-                kind="opencode",
-                label=name,
-                ssh=ssh,
-                python=python,
+        opencode_value = raw.get("auth_file")
+        if opencode_value is None and ssh is not None:
+            raise ConfigError(f"hosts[{index}].auth_file is required for a remote host")
+        if opencode_value is not None and (
+            not isinstance(opencode_value, str) or not opencode_value.strip()
+        ):
+            raise ConfigError(f"hosts[{index}].auth_file must be a non-empty string")
+        if isinstance(opencode_value, str):
+            opencode_path = (
+                _remote_path(opencode_value.strip(), index)
+                if ssh is not None
+                else _path(base, opencode_value.strip())
             )
+        else:
+            opencode_path = target_auth
+        opencode_target = SyncTarget(
+            host=name,
+            workspace=Workspace.OPENCODE,
+            path=opencode_path,
+            ssh=ssh,
+            python=python,
         )
+        if opencode_target.key in seen_targets:
+            raise ConfigError(
+                f"hosts[{index}] creates duplicate target {opencode_target.key}"
+            )
+        seen_targets.add(opencode_target.key)
+        targets.append(opencode_target)
         codex_value = raw.get("codex_auth_file")
-        if codex_value is not None:
+        codex_path: Path | str | None = None
+        if codex_value is None:
+            if ssh is None:
+                codex_path = codex_auth
+        else:
             if codex_auth is None:
                 raise ConfigError(
                     f"hosts[{index}].codex_auth_file requires codex.auth_file"
@@ -191,26 +215,25 @@ def _sync_config(
                 raise ConfigError(
                     f"hosts[{index}].codex_auth_file must be a non-empty string"
                 )
-            target_name = f"{name}.codex"
-            if target_name in seen:
-                raise ConfigError(
-                    f"hosts[{index}].codex_auth_file creates duplicate target {target_name}"
-                )
-            seen.add(target_name)
-            targets.append(
-                SyncTarget(
-                    name=target_name,
-                    path=(
-                        _remote_path(codex_value.strip(), index, "codex_auth_file")
-                        if ssh is not None
-                        else _path(base, codex_value.strip())
-                    ),
-                    kind="codex",
-                    label=name,
-                    ssh=ssh,
-                    python=python,
-                )
+            codex_path = (
+                _remote_path(codex_value.strip(), index, "codex_auth_file")
+                if ssh is not None
+                else _path(base, codex_value.strip())
             )
+        if codex_path is not None:
+            target = SyncTarget(
+                host=name,
+                workspace=Workspace.CODEX,
+                path=codex_path,
+                ssh=ssh,
+                python=python,
+            )
+            if target.key in seen_targets:
+                raise ConfigError(
+                    f"hosts[{index}].codex_auth_file creates duplicate target {target.key}"
+                )
+            seen_targets.add(target.key)
+            targets.append(target)
     return SyncConfig(
         interval_seconds=_integer(table, "interval_seconds", 120, minimum=10),
         connect_timeout_seconds=_integer(table, "connect_timeout_seconds", 5, minimum=1),

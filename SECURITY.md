@@ -69,6 +69,11 @@ deletes their messages. Registry fingerprints are one-way SHA-256 values used
 to detect identity and external changes. Logs and ordinary Telegram text never
 include tokens or ChatGPT account IDs.
 
+Both workspaces reference the same permanent Session UUIDs and canonical slots.
+Workspace switching creates no additional credential store. Target-specific
+codecs merge an already selected slot into a published view; the transport never
+chooses, converts, or owns a Session.
+
 Background usage failures are isolated per Session. The registry retains only a
 bounded, whitespace-normalized diagnostic, failure count, timestamp, and refresh
 source; a failed Session cannot suppress refresh or menu delivery for another
@@ -105,6 +110,9 @@ or cancelled reauthorization restores the previous credential document.
 
 A Session cannot be removed while it is a default or assigned to a host in
 either workspace.
+
+Telegram workspace snapshots are read-only and assembled under one registry
+lock. Rendering a menu cannot reconcile targets or persist state.
 
 ## Codex boundary
 

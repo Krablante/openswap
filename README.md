@@ -17,8 +17,8 @@ have several ChatGPT accounts, work from more than one machine, or want to know
 which usage window resets first. Switching credentials by hand is easy to get
 wrong, and it gives you no useful view of account health or remaining usage.
 
-OpenSwap turns those credentials into named Sessions shared by two independent
-workspaces: OpenCode-compatible clients and Codex CLI. Each workspace keeps its
+OpenSwap turns those credentials into one pool of named Sessions shared by two
+independent workspaces: OpenCode-compatible clients and Codex CLI. Each workspace keeps its
 own active/default Session, so OpenCode can use Session 3 while Codex uses
 Session 2. OpenSwap puts the entire workflow in one compact Telegram message.
 It shows live allowance, reset windows, account-wide token history, login
@@ -147,7 +147,8 @@ activity, login, import, export, refresh, and reset actions are shared. Active
 markers, default selection, Hosts, and target health apply only to the selected
 workspace. The switch is hidden during sign-in and import prompts.
 
-The root screen shows Sessions as compact buttons with remaining allowance,
+The root screen labels the pool as `shared sessions` and shows each Session as a
+compact button with remaining allowance,
 reset countdown, and earned reset credits. Selecting a Session opens its
 details and actions. Host distribution never appears inside a Session button;
 with several Sessions and several hosts it is rendered as a separate
@@ -186,7 +187,7 @@ remaining allowance, or host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.4.2
+OpenSwap 2.5.0
 
 ✓ 🔐 Codex CLI · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
@@ -238,8 +239,6 @@ command_timeout_seconds = 15
 
 [[hosts]]
 name = "local"
-auth_file = "/home/user/.local/share/opencode/auth.json"
-codex_auth_file = "~/.codex/auth.json"
 
 [[hosts]]
 name = "server"
@@ -249,9 +248,11 @@ ssh = "user@server.example"
 python = "python3"
 ```
 
-Exactly one local host must point at `[opencode].auth_file`. When the Codex
-workspace is enabled, exactly one local `codex_auth_file` must also match
-`[codex].auth_file`; remote `codex_auth_file` values remain optional. Remote
+Exactly one host must be local. Its OpenCode and optional Codex endpoints are
+derived from `[opencode].auth_file` and `[codex].auth_file`, so those paths do
+not need to be repeated. Explicit local values remain accepted for compatibility
+and must match. Remote `auth_file` values are required and remote
+`codex_auth_file` values remain optional. Remote
 paths remain native to the remote operating system, so a Linux coordinator can
 target a Windows path and a Windows coordinator can target Linux. For a Windows
 SSH target, set `python = "python"` when that is its Python command.

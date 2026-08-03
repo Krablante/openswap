@@ -29,8 +29,7 @@ scheduler_interval_seconds = 60
 #
 # [[hosts]]
 # name = "local"
-# auth_file = "/home/user/.local/share/opencode/auth.json"
-# codex_auth_file = "~/.codex/auth.json"
+# Local endpoints are derived from [opencode] and [codex].
 #
 # [[hosts]]
 # name = "server"

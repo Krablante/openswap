@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -21,10 +22,22 @@ from .core import (
     DeadSessionError,
     OpenSwap,
     OpenSwapError,
+    WorkspaceSnapshot,
     account_name,
     parse_time,
     token_usage_overview,
     token_usage_stats,
+)
+
+VIEW_HOSTS = "__hosts__"
+VIEW_HOSTS_RESET = "__hosts_reset__"
+VIEW_LANGUAGE = "__language__"
+VIEW_SYSTEM = "__system__"
+VIEW_TOKENS = "__tokens__"
+HOST_VIEW_PREFIX = "__host__:"
+EXPORT_VIEW_PREFIX = "__export__:"
+SPECIAL_VIEWS = frozenset(
+    {VIEW_HOSTS, VIEW_HOSTS_RESET, VIEW_LANGUAGE, VIEW_SYSTEM, VIEW_TOKENS}
 )
 
 
@@ -36,6 +49,15 @@ class TelegramError(RuntimeError):
 class TelegramSettings:
     token: str
     allowed_users: frozenset[int]
+
+
+@dataclass(frozen=True)
+class CallbackContext:
+    chat_id: int
+    user_id: int
+    message_id: int
+    language: str
+    space: str
 
 
 @dataclass(frozen=True)
@@ -84,23 +106,8 @@ def _host_count_label(count: int, language: str) -> str:
     return f"{count} {noun}"
 
 
-def _assigned_host_labels(sync: dict[str, Any]) -> dict[str, list[str]]:
-    assignments: dict[str, list[str]] = {}
-    targets = sync.get("targets")
-    if not isinstance(targets, list):
-        return assignments
-    for target in targets:
-        if not isinstance(target, dict):
-            continue
-        account_id = target.get("account_id")
-        label = target.get("label") or target.get("name")
-        if isinstance(account_id, str) and isinstance(label, str) and label:
-            assignments.setdefault(account_id, []).append(label)
-    return assignments
-
-
 def _host_assignment_line(
-    account: dict[str, Any], hosts: list[str], language: str
+    account: dict[str, Any], hosts: Sequence[str], language: str
 ) -> str:
     labels = ", ".join(html.escape(host) for host in hosts)
     return (
@@ -791,7 +798,7 @@ class TelegramBot:
                 except TelegramError:
                     pass
             self._show_menu(
-                int(chat["id"]), int(sender["id"]), view_account="__language__"
+                int(chat["id"]), int(sender["id"]), view_account=VIEW_LANGUAGE
             )
             return
         chat_id = int(chat["id"])
@@ -934,450 +941,18 @@ class TelegramBot:
         self._answer(callback_id)
 
         try:
-            if data.startswith("open:"):
-                account_id = data.removeprefix("open:")
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=account_id,
-                )
-            elif data.startswith("space:"):
-                selected_space = data.removeprefix("space:")
-                if not self.openswap.space_enabled(selected_space):
-                    raise TelegramError("space is not configured")
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=None,
-                    space=selected_space,
-                )
-            elif data == "back":
-                self.pending_resets.pop(chat_id, None)
-                self.pending_deletes.pop(chat_id, None)
-                self.login_choices.discard(chat_id)
-                self.import_prompts.discard(chat_id)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=None,
-                )
-            elif data.startswith("language:"):
-                selected_language = data.removeprefix("language:")
-                self.openswap.set_telegram_language(user_id, selected_language)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(selected_language, "Language changed", "Язык изменён"),
-                    view_account=None,
-                )
-                self._install_chat_commands(chat_id, selected_language)
-            elif data == "system":
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account="__system__",
-                )
-            elif data == "tokens":
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account="__tokens__",
-                )
-            elif data == "tokens-refresh":
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(
-                        language,
-                        "Refreshing token activity…",
-                        "Обновляю активность токенов…",
-                    ),
-                    view_account="__tokens__",
-                )
-                self.openswap.refresh_all_token_usage(force=True)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(
-                        language,
-                        "Token activity refreshed",
-                        "Активность токенов обновлена",
-                    ),
-                    view_account="__tokens__",
-                )
-            elif data == "retry-sync":
-                self.openswap.request_sync()
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Sync scheduled", "Синхронизация запланирована"),
-                    view_account="__system__",
-                )
-            elif data == "hosts":
-                if self.openswap.sync_status(space).get("total", 0) <= 1:
-                    self._show_menu(
-                        chat_id,
-                        user_id,
-                        message_id=message_id,
-                        view_account=None,
-                    )
-                    return
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account="__hosts__",
-                )
-            elif data.startswith("host:"):
-                target_name = data.removeprefix("host:")
-                self._target_by_name(target_name)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=f"__host__:{target_name}",
-                )
-            elif data.startswith("host-default:"):
-                target_name = data.removeprefix("host-default:")
-                target = self._target_by_name(target_name)
-                assignment = self.openswap.unassign_target(target["name"])
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=f"{assignment['name']} → {_pick(language, 'default', 'по умолчанию')}",
-                    view_account=f"__host__:{target_name}",
-                )
-            elif data.startswith("host-use:"):
-                parts = data.split(":")
-                if len(parts) != 3 or not parts[1] or not parts[2].isdigit():
-                    raise TelegramError("invalid host assignment callback")
-                target_name = parts[1]
-                target = self._target_by_name(target_name)
-                account = self._account_by_sequence(int(parts[2]))
-                assignment = self.openswap.assign_target(
-                    target["name"], account["id"]
-                )
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=f"{assignment['name']} → {assignment['session']}",
-                    view_account=f"__host__:{target_name}",
-                )
-            elif data == "all-default":
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account="__hosts_reset__",
-                )
-            elif data == "all-default-apply":
-                removed = self.openswap.clear_target_overrides(space)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(
-                        language,
-                        f"Overrides removed: {removed}",
-                        f"Сброшено назначений: {removed}",
-                    ),
-                    view_account="__hosts__",
-                )
-            elif data == "add-session":
-                self.login_choices.add(chat_id)
-                self.import_prompts.discard(chat_id)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=None,
-                )
-            elif data == "cancel-add":
-                self.login_choices.discard(chat_id)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=None,
-                )
-            elif data == "import-auth":
-                self.login_choices.discard(chat_id)
-                self.import_prompts.add(chat_id)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=None,
-                )
-            elif data == "cancel-import":
-                self.import_prompts.discard(chat_id)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=None,
-                )
-            elif data.startswith("export:"):
-                account_id = data.removeprefix("export:")
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    view_account=f"__export__:{account_id}",
-                )
-            elif data.startswith("export-codex:"):
-                account_id = data.removeprefix("export-codex:")
-                auth_document = self.openswap.export_auth_document(account_id, "codex")
-                self._send_auth_document(chat_id, auth_document, "Codex CLI")
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(
-                        language,
-                        "Codex auth.json exported",
-                        "auth.json для Codex экспортирован",
-                    ),
-                    view_account=account_id,
-                )
-            elif data.startswith("export-opencode:"):
-                account_id = data.removeprefix("export-opencode:")
-                auth_document = self.openswap.export_auth_document(
-                    account_id, "opencode"
-                )
-                self._send_auth_document(
-                    chat_id, auth_document, "OpenCode / OpenCodez"
-                )
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(
-                        language,
-                        "OpenCode auth.json exported",
-                        "auth.json для OpenCode экспортирован",
-                    ),
-                    view_account=account_id,
-                )
-            elif data == "login-device":
-                self._start_login(chat_id, user_id, message_id, "device")
-            elif data == "login-browser":
-                self._start_login(chat_id, user_id, message_id, "browser")
-            elif data.startswith("relogin-device:"):
-                self._start_login(
-                    chat_id,
-                    user_id,
-                    message_id,
-                    "device",
-                    replace_account=data.removeprefix("relogin-device:"),
-                )
-            elif data.startswith("relogin-browser:"):
-                self._start_login(
-                    chat_id,
-                    user_id,
-                    message_id,
-                    "browser",
-                    replace_account=data.removeprefix("relogin-browser:"),
-                )
-            elif data == "cancel-login":
-                self._cancel_login(chat_id)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Sign-in cancelled", "Вход отменён"),
-                    view_account=None,
-                )
-            elif data == "refresh-root":
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Refreshing all sessions…", "Обновляю все сессии…"),
-                    view_account=None,
-                )
-                checked = self.openswap.refresh_all_usage()
-                self.openswap.refresh_all_token_usage(force=True)
-                notice = (
-                    _pick(language, f"Updated: {len(checked)}", f"Обновлено: {len(checked)}")
-                    if checked
-                    else _pick(language, "No sessions to refresh", "Нет сессий для обновления")
-                )
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=notice,
-                    view_account=None,
-                )
-            elif data.startswith("use:"):
-                account_id = data.removeprefix("use:")
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Switching…", "Переключаю…"),
-                    view_account=account_id,
-                )
-                sync = self.openswap.sync_status(space)
-                single_host = sync.get("enabled") and sync.get("total") == 1
-                account = self.openswap.use(
-                    account_id,
-                    space=space,
-                    all_targets=bool(single_host),
-                )
-                notice = _pick(
-                    language,
-                    f"Active session: {account_name(account)}" if single_host else f"Default: {account_name(account)}",
-                    f"Активная сессия: {account_name(account)}" if single_host else f"По умолчанию: {account_name(account)}",
-                )
-                if sync["enabled"]:
-                    notice += _pick(language, " · sync scheduled", " · синхронизация запланирована")
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=notice,
-                    view_account=account_id,
-                )
-            elif data.startswith("refresh:"):
-                account_id = data.removeprefix("refresh:")
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Refreshing…", "Обновляю…"),
-                    view_account=account_id,
-                )
-                account = self.openswap.refresh(account_id)
-                account = self.openswap.refresh_token_usage(
-                    account_id, force=True
-                )
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, f"Refreshed {account_name(account)}", f"Обновлён {account_name(account)}"),
-                    view_account=account_id,
-                )
-            elif data.startswith("reset:"):
-                account_id = data.removeprefix("reset:")
-                self.pending_resets[chat_id] = PendingReset(
-                    account_id=account_id,
-                    idempotency_key=str(uuid.uuid4()),
-                    expires_monotonic=time.monotonic() + 120,
-                )
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "The nearest expiring reset will be used", "Будет использован reset с ближайшим сроком истечения"),
-                    view_account=account_id,
-                )
-            elif data == "confirm-reset":
-                pending = self.pending_resets.get(chat_id)
-                if pending is None or pending.expires_monotonic < time.monotonic():
-                    self.pending_resets.pop(chat_id, None)
-                    self._show_menu(
-                        chat_id,
-                        user_id,
-                        message_id=message_id,
-                        notice=_pick(language, "Confirmation expired", "Подтверждение истекло"),
-                        view_account=pending.account_id if pending else None,
-                    )
-                    return
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Applying reset…", "Применяю reset…"),
-                    view_account=pending.account_id,
-                )
-                account, outcome = self.openswap.consume_reset(
-                    pending.account_id, idempotency_key=pending.idempotency_key
-                )
-                self.pending_resets.pop(chat_id, None)
-                outcome_text = {
-                    "reset": _pick(language, f"Nearest reset applied to {account_name(account)}", f"Ближайший reset применён к {account_name(account)}"),
-                    "alreadyRedeemed": _pick(language, "Reset was already applied; data refreshed", "Reset уже был применён; данные обновлены"),
-                    "nothingToReset": _pick(language, "Nothing to reset now", "Сейчас нечего сбрасывать"),
-                    "noCredit": _pick(language, "No earned reset credits", "Earned reset-кредитов нет"),
-                }[outcome]
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=outcome_text,
-                    view_account=pending.account_id,
-                )
-            elif data == "cancel-reset":
-                pending = self.pending_resets.pop(chat_id, None)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Reset cancelled", "Reset отменён"),
-                    view_account=pending.account_id if pending else None,
-                )
-            elif data.startswith("delete:"):
-                account_id = data.removeprefix("delete:")
-                self.pending_deletes[chat_id] = PendingDelete(
-                    account_id=account_id,
-                    expires_monotonic=time.monotonic() + 120,
-                )
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Confirm permanent deletion", "Подтвердите необратимое удаление"),
-                    view_account=account_id,
-                )
-            elif data == "confirm-delete":
-                pending_delete = self.pending_deletes.get(chat_id)
-                if (
-                    pending_delete is None
-                    or pending_delete.expires_monotonic < time.monotonic()
-                ):
-                    self.pending_deletes.pop(chat_id, None)
-                    self._show_menu(
-                        chat_id,
-                        user_id,
-                        message_id=message_id,
-                        notice=_pick(language, "Deletion confirmation expired", "Подтверждение удаления истекло"),
-                        view_account=(
-                            pending_delete.account_id if pending_delete else None
-                        ),
-                    )
-                    return
-                account = self.openswap.remove_account(pending_delete.account_id)
-                self.pending_deletes.pop(chat_id, None)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, f"{account_name(account)} deleted", f"{account_name(account)} удалена"),
-                    view_account=None,
-                )
-            elif data == "cancel-delete":
-                pending_delete = self.pending_deletes.pop(chat_id, None)
-                self._show_menu(
-                    chat_id,
-                    user_id,
-                    message_id=message_id,
-                    notice=_pick(language, "Deletion cancelled", "Удаление отменено"),
-                    view_account=(pending_delete.account_id if pending_delete else None),
-                )
+            context = CallbackContext(
+                chat_id, user_id, message_id, language, space
+            )
+            if (
+                self._callback_navigation(data, context)
+                or self._callback_hosts(data, context)
+                or self._callback_auth(data, context)
+                or self._callback_session(data, context)
+                or self._callback_confirmation(data, context)
+            ):
+                return
+            raise TelegramError("this action is no longer available")
         except (OpenSwapError, CodexError, TelegramError) as exc:
             stored = self.openswap.telegram_menus().get(str(chat_id), {})
             stored_view = stored.get("view_account") if isinstance(stored, dict) else None
@@ -1390,6 +965,544 @@ class TelegramBot:
                 notice=_pick(language, f"Error: {exc}", f"Ошибка: {exc}"),
                 view_account=stored_view,
             )
+
+    def _callback_confirmation(
+        self, data: str, context: CallbackContext
+    ) -> bool:
+        chat_id = context.chat_id
+        user_id = context.user_id
+        message_id = context.message_id
+        language = context.language
+        if data.startswith("reset:"):
+            account_id = data.removeprefix("reset:")
+            self.pending_resets[chat_id] = PendingReset(
+                account_id=account_id,
+                idempotency_key=str(uuid.uuid4()),
+                expires_monotonic=time.monotonic() + 120,
+            )
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    "The nearest expiring reset will be used",
+                    "Будет использован reset с ближайшим сроком истечения",
+                ),
+                view_account=account_id,
+            )
+        elif data == "confirm-reset":
+            pending = self.pending_resets.get(chat_id)
+            if pending is None or pending.expires_monotonic < time.monotonic():
+                self.pending_resets.pop(chat_id, None)
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    notice=_pick(
+                        language, "Confirmation expired", "Подтверждение истекло"
+                    ),
+                    view_account=pending.account_id if pending else None,
+                )
+                return True
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(language, "Applying reset…", "Применяю reset…"),
+                view_account=pending.account_id,
+            )
+            account, outcome = self.openswap.consume_reset(
+                pending.account_id, idempotency_key=pending.idempotency_key
+            )
+            self.pending_resets.pop(chat_id, None)
+            outcome_text = {
+                "reset": _pick(
+                    language,
+                    f"Nearest reset applied to {account_name(account)}",
+                    f"Ближайший reset применён к {account_name(account)}",
+                ),
+                "alreadyRedeemed": _pick(
+                    language,
+                    "Reset was already applied; data refreshed",
+                    "Reset уже был применён; данные обновлены",
+                ),
+                "nothingToReset": _pick(
+                    language,
+                    "Nothing to reset now",
+                    "Сейчас нечего сбрасывать",
+                ),
+                "noCredit": _pick(
+                    language,
+                    "No earned reset credits",
+                    "Earned reset-кредитов нет",
+                ),
+            }[outcome]
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=outcome_text,
+                view_account=pending.account_id,
+            )
+        elif data == "cancel-reset":
+            pending = self.pending_resets.pop(chat_id, None)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(language, "Reset cancelled", "Reset отменён"),
+                view_account=pending.account_id if pending else None,
+            )
+        elif data.startswith("delete:"):
+            account_id = data.removeprefix("delete:")
+            self.pending_deletes[chat_id] = PendingDelete(
+                account_id=account_id,
+                expires_monotonic=time.monotonic() + 120,
+            )
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    "Confirm permanent deletion",
+                    "Подтвердите необратимое удаление",
+                ),
+                view_account=account_id,
+            )
+        elif data == "confirm-delete":
+            pending = self.pending_deletes.get(chat_id)
+            if pending is None or pending.expires_monotonic < time.monotonic():
+                self.pending_deletes.pop(chat_id, None)
+                self._show_menu(
+                    chat_id,
+                    user_id,
+                    message_id=message_id,
+                    notice=_pick(
+                        language,
+                        "Deletion confirmation expired",
+                        "Подтверждение удаления истекло",
+                    ),
+                    view_account=pending.account_id if pending else None,
+                )
+                return True
+            account = self.openswap.remove_account(pending.account_id)
+            self.pending_deletes.pop(chat_id, None)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    f"{account_name(account)} deleted",
+                    f"{account_name(account)} удалена",
+                ),
+                view_account=None,
+            )
+        elif data == "cancel-delete":
+            pending = self.pending_deletes.pop(chat_id, None)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(language, "Deletion cancelled", "Удаление отменено"),
+                view_account=pending.account_id if pending else None,
+            )
+        else:
+            return False
+        return True
+
+    def _callback_session(self, data: str, context: CallbackContext) -> bool:
+        chat_id = context.chat_id
+        user_id = context.user_id
+        message_id = context.message_id
+        language = context.language
+        space = context.space
+        if data == "refresh-root":
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    "Refreshing all sessions…",
+                    "Обновляю все сессии…",
+                ),
+                view_account=None,
+            )
+            checked = self.openswap.refresh_all_usage()
+            self.openswap.refresh_all_token_usage(force=True)
+            notice = (
+                _pick(
+                    language,
+                    f"Updated: {len(checked)}",
+                    f"Обновлено: {len(checked)}",
+                )
+                if checked
+                else _pick(
+                    language,
+                    "No sessions to refresh",
+                    "Нет сессий для обновления",
+                )
+            )
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=notice,
+                view_account=None,
+            )
+        elif data.startswith("use:"):
+            account_id = data.removeprefix("use:")
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(language, "Switching…", "Переключаю…"),
+                view_account=account_id,
+            )
+            snapshot = self.openswap.workspace_snapshot(space)
+            single_host = snapshot.target_count == 1
+            account = self.openswap.use(
+                account_id, space=space, all_targets=single_host
+            )
+            notice = _pick(
+                language,
+                (
+                    f"Active session: {account_name(account)}"
+                    if single_host
+                    else f"Default: {account_name(account)}"
+                ),
+                (
+                    f"Активная сессия: {account_name(account)}"
+                    if single_host
+                    else f"По умолчанию: {account_name(account)}"
+                ),
+            )
+            if snapshot.sync["enabled"]:
+                notice += _pick(
+                    language,
+                    " · sync scheduled",
+                    " · синхронизация запланирована",
+                )
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=notice,
+                view_account=account_id,
+            )
+        elif data.startswith("refresh:"):
+            account_id = data.removeprefix("refresh:")
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(language, "Refreshing…", "Обновляю…"),
+                view_account=account_id,
+            )
+            self.openswap.refresh(account_id)
+            account = self.openswap.refresh_token_usage(account_id, force=True)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    f"Refreshed {account_name(account)}",
+                    f"Обновлён {account_name(account)}",
+                ),
+                view_account=account_id,
+            )
+        else:
+            return False
+        return True
+
+    def _callback_auth(self, data: str, context: CallbackContext) -> bool:
+        chat_id = context.chat_id
+        user_id = context.user_id
+        message_id = context.message_id
+        language = context.language
+        if data == "add-session":
+            self.login_choices.add(chat_id)
+            self.import_prompts.discard(chat_id)
+            self._show_menu(
+                chat_id, user_id, message_id=message_id, view_account=None
+            )
+        elif data == "cancel-add":
+            self.login_choices.discard(chat_id)
+            self._show_menu(
+                chat_id, user_id, message_id=message_id, view_account=None
+            )
+        elif data == "import-auth":
+            self.login_choices.discard(chat_id)
+            self.import_prompts.add(chat_id)
+            self._show_menu(
+                chat_id, user_id, message_id=message_id, view_account=None
+            )
+        elif data == "cancel-import":
+            self.import_prompts.discard(chat_id)
+            self._show_menu(
+                chat_id, user_id, message_id=message_id, view_account=None
+            )
+        elif data.startswith("export:"):
+            account_id = data.removeprefix("export:")
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=f"{EXPORT_VIEW_PREFIX}{account_id}",
+            )
+        elif data.startswith("export-codex:"):
+            account_id = data.removeprefix("export-codex:")
+            auth_document = self.openswap.export_auth_document(
+                account_id, "codex"
+            )
+            self._send_auth_document(chat_id, auth_document, "Codex CLI")
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    "Codex auth.json exported",
+                    "auth.json для Codex экспортирован",
+                ),
+                view_account=account_id,
+            )
+        elif data.startswith("export-opencode:"):
+            account_id = data.removeprefix("export-opencode:")
+            auth_document = self.openswap.export_auth_document(
+                account_id, "opencode"
+            )
+            self._send_auth_document(
+                chat_id, auth_document, "OpenCode / OpenCodez"
+            )
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    "OpenCode auth.json exported",
+                    "auth.json для OpenCode экспортирован",
+                ),
+                view_account=account_id,
+            )
+        elif data == "login-device":
+            self._start_login(chat_id, user_id, message_id, "device")
+        elif data == "login-browser":
+            self._start_login(chat_id, user_id, message_id, "browser")
+        elif data.startswith("relogin-device:"):
+            self._start_login(
+                chat_id,
+                user_id,
+                message_id,
+                "device",
+                replace_account=data.removeprefix("relogin-device:"),
+            )
+        elif data.startswith("relogin-browser:"):
+            self._start_login(
+                chat_id,
+                user_id,
+                message_id,
+                "browser",
+                replace_account=data.removeprefix("relogin-browser:"),
+            )
+        elif data == "cancel-login":
+            self._cancel_login(chat_id)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(language, "Sign-in cancelled", "Вход отменён"),
+                view_account=None,
+            )
+        else:
+            return False
+        return True
+
+    def _callback_hosts(self, data: str, context: CallbackContext) -> bool:
+        chat_id = context.chat_id
+        user_id = context.user_id
+        message_id = context.message_id
+        language = context.language
+        space = context.space
+        if data == "hosts":
+            if self.openswap.workspace_snapshot(space).target_count <= 1:
+                self._show_menu(
+                    chat_id, user_id, message_id=message_id, view_account=None
+                )
+                return True
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=VIEW_HOSTS,
+            )
+        elif data.startswith("host:"):
+            target_name = data.removeprefix("host:")
+            self._target_by_name(target_name)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=f"{HOST_VIEW_PREFIX}{target_name}",
+            )
+        elif data.startswith("host-default:"):
+            target_name = data.removeprefix("host-default:")
+            target = self._target_by_name(target_name)
+            assignment = self.openswap.unassign_target(target["name"])
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=(
+                    f"{assignment['name']} → "
+                    f"{_pick(language, 'default', 'по умолчанию')}"
+                ),
+                view_account=f"{HOST_VIEW_PREFIX}{target_name}",
+            )
+        elif data.startswith("host-use:"):
+            parts = data.split(":")
+            if len(parts) != 3 or not parts[1] or not parts[2].isdigit():
+                raise TelegramError("invalid host assignment callback")
+            target_name = parts[1]
+            target = self._target_by_name(target_name)
+            account = self._account_by_sequence(int(parts[2]))
+            assignment = self.openswap.assign_target(
+                target["name"], account["id"]
+            )
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=f"{assignment['name']} → {assignment['session']}",
+                view_account=f"{HOST_VIEW_PREFIX}{target_name}",
+            )
+        elif data == "all-default":
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=VIEW_HOSTS_RESET,
+            )
+        elif data == "all-default-apply":
+            removed = self.openswap.clear_target_overrides(space)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    f"Overrides removed: {removed}",
+                    f"Сброшено назначений: {removed}",
+                ),
+                view_account=VIEW_HOSTS,
+            )
+        else:
+            return False
+        return True
+
+    def _callback_navigation(
+        self, data: str, context: CallbackContext
+    ) -> bool:
+        chat_id = context.chat_id
+        user_id = context.user_id
+        message_id = context.message_id
+        language = context.language
+        if data.startswith("open:"):
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=data.removeprefix("open:"),
+            )
+        elif data.startswith("space:"):
+            selected_space = data.removeprefix("space:")
+            if not self.openswap.space_enabled(selected_space):
+                raise TelegramError("space is not configured")
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=None,
+                space=selected_space,
+            )
+        elif data == "back":
+            self.pending_resets.pop(chat_id, None)
+            self.pending_deletes.pop(chat_id, None)
+            self.login_choices.discard(chat_id)
+            self.import_prompts.discard(chat_id)
+            self._show_menu(
+                chat_id, user_id, message_id=message_id, view_account=None
+            )
+        elif data.startswith("language:"):
+            selected_language = data.removeprefix("language:")
+            self.openswap.set_telegram_language(user_id, selected_language)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    selected_language, "Language changed", "Язык изменён"
+                ),
+                view_account=None,
+            )
+            self._install_chat_commands(chat_id, selected_language)
+        elif data == "system":
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=VIEW_SYSTEM,
+            )
+        elif data == "tokens":
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                view_account=VIEW_TOKENS,
+            )
+        elif data == "tokens-refresh":
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    "Refreshing token activity…",
+                    "Обновляю активность токенов…",
+                ),
+                view_account=VIEW_TOKENS,
+            )
+            self.openswap.refresh_all_token_usage(force=True)
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language,
+                    "Token activity refreshed",
+                    "Активность токенов обновлена",
+                ),
+                view_account=VIEW_TOKENS,
+            )
+        elif data == "retry-sync":
+            self.openswap.request_sync()
+            self._show_menu(
+                chat_id,
+                user_id,
+                message_id=message_id,
+                notice=_pick(
+                    language, "Sync scheduled", "Синхронизация запланирована"
+                ),
+                view_account=VIEW_SYSTEM,
+            )
+        else:
+            return False
+        return True
 
     def _start_login(
         self,
@@ -1565,26 +1678,21 @@ class TelegramBot:
                 candidate = stored.get("message_id")
                 if isinstance(candidate, int):
                     message_id = candidate
-            sync = self.openswap.sync_status(space)
-            accounts, active = self.openswap.accounts(space)
+            snapshot = self.openswap.workspace_snapshot(space)
+            sync = snapshot.sync
+            accounts = list(snapshot.accounts)
             language = self.openswap.telegram_language(user_id)
-            special_view = view_account in {
-                "__hosts__",
-                "__hosts_reset__",
-                "__language__",
-                "__system__",
-                "__tokens__",
-            }
-            if isinstance(view_account, str) and view_account.startswith("__host__:"):
-                target_name = view_account.removeprefix("__host__:")
+            special_view = view_account in SPECIAL_VIEWS
+            if isinstance(view_account, str) and view_account.startswith(HOST_VIEW_PREFIX):
+                target_name = view_account.removeprefix(HOST_VIEW_PREFIX)
                 special_view = any(
                     target.get("name") == target_name for target in sync["targets"]
                 )
                 if not special_view:
-                    view_account = "__hosts__"
+                    view_account = VIEW_HOSTS
                     special_view = True
-            if isinstance(view_account, str) and view_account.startswith("__export__:"):
-                account_id = view_account.removeprefix("__export__:")
+            if isinstance(view_account, str) and view_account.startswith(EXPORT_VIEW_PREFIX):
+                account_id = view_account.removeprefix(EXPORT_VIEW_PREFIX)
                 special_view = any(
                     account.get("id") == account_id
                     and not account.get("last_error")
@@ -1619,33 +1727,27 @@ class TelegramBot:
             login_choice = chat_id in self.login_choices
             import_prompt = chat_id in self.import_prompts
             system_status = (
-                self.openswap.system_status(space) if view_account == "__system__" else None
+                self.openswap.system_status(space) if view_account == VIEW_SYSTEM else None
             )
             text = self._menu_text(
-                accounts,
-                active,
+                snapshot,
                 notice,
                 view_account,
                 pending_login,
                 login_choice,
                 import_prompt,
-                sync,
                 language,
                 system_status,
-                space,
             )
             keyboard = self._menu_keyboard(
-                accounts,
-                active,
+                snapshot,
                 pending,
                 pending_delete,
                 pending_login,
                 login_choice,
                 import_prompt,
                 view_account,
-                sync,
                 language,
-                space,
             )
             if (
                 view_account is None
@@ -1697,24 +1799,22 @@ class TelegramBot:
 
     @staticmethod
     def _menu_text(
-        accounts: list[dict[str, Any]],
-        active: str | None,
+        snapshot: WorkspaceSnapshot,
         notice: str | None,
         view_account: str | None,
         pending_login: PendingLogin | None,
         login_choice: bool,
         import_prompt: bool,
-        sync: dict[str, Any],
         language: str,
         system_status: dict[str, Any] | None,
-        space: str,
     ) -> str:
+        accounts = list(snapshot.accounts)
+        sync = snapshot.sync
+        space = snapshot.workspace.value
         space_icon = "🔵" if space == "opencode" else "🟣"
         space_name = "opencode" if space == "opencode" else "codex"
         brand = f"{space_icon} <b>OpenSwap</b> · <b>{space_name}</b>"
-        effective_active = active
-        if sync.get("enabled") and sync.get("total") == 1 and sync.get("targets"):
-            effective_active = sync["targets"][0].get("account_id")
+        effective_active = snapshot.effective_account
         selected = next(
             (account for account in accounts if account["id"] == view_account), None
         )
@@ -1722,28 +1822,28 @@ class TelegramBot:
         token_unit = _token_unit(token_overview)
         host_target = None
         export_account = None
-        if isinstance(view_account, str) and view_account.startswith("__host__:"):
-            host_name = view_account.removeprefix("__host__:")
+        if isinstance(view_account, str) and view_account.startswith(HOST_VIEW_PREFIX):
+            host_name = view_account.removeprefix(HOST_VIEW_PREFIX)
             host_target = next(
                 (target for target in sync["targets"] if target["name"] == host_name),
                 None,
             )
-        if isinstance(view_account, str) and view_account.startswith("__export__:"):
-            account_id = view_account.removeprefix("__export__:")
+        if isinstance(view_account, str) and view_account.startswith(EXPORT_VIEW_PREFIX):
+            account_id = view_account.removeprefix(EXPORT_VIEW_PREFIX)
             export_account = next(
                 (account for account in accounts if account["id"] == account_id),
                 None,
             )
-        if view_account == "__language__":
+        if view_account == VIEW_LANGUAGE:
             lines = [f"{brand} · 🗣 {_pick(language, 'language', 'язык')}"]
-        elif view_account == "__system__":
+        elif view_account == VIEW_SYSTEM:
             lines = [f"{brand} · ⚙ {_pick(language, 'system', 'система')}"]
-        elif view_account == "__tokens__":
+        elif view_account == VIEW_TOKENS:
             lines = [
                 f"{brand} · 📊 "
                 + _pick(language, "token activity", "активность токенов")
             ]
-        elif view_account in {"__hosts__", "__hosts_reset__"}:
+        elif view_account in {VIEW_HOSTS, VIEW_HOSTS_RESET}:
             lines = [f"{brand} · 🌐 {_pick(language, 'hosts', 'хосты')}"]
         elif host_target is not None:
             lines = [f"{brand} · 🖥 {_pick(language, 'assignment', 'назначение')}"]
@@ -1759,13 +1859,17 @@ class TelegramBot:
         else:
             lines = [
                 f"{brand} · "
-                + _pick(language, f"sessions: {len(accounts)}", f"сессий: {len(accounts)}")
+                + _pick(
+                    language,
+                    f"shared sessions: {len(accounts)}",
+                    f"общих сессий: {len(accounts)}",
+                )
             ]
         if notice:
             lines.extend([f"<i>{html.escape(notice)}</i>", ""])
         else:
             lines.append("")
-        if view_account == "__language__":
+        if view_account == VIEW_LANGUAGE:
             lines.extend(
                 [
                     _pick(language, "Choose the interface language.", "Выберите язык интерфейса."),
@@ -1777,7 +1881,7 @@ class TelegramBot:
                     "",
                 ]
             )
-        elif view_account == "__system__" and system_status is not None:
+        elif view_account == VIEW_SYSTEM and system_status is not None:
             codex = system_status["codex"]
             client = system_status["client"]
             sessions = system_status["sessions"]
@@ -1848,7 +1952,7 @@ class TelegramBot:
                     ]
                 )
             lines.append("")
-        elif view_account == "__tokens__":
+        elif view_account == VIEW_TOKENS:
             overview = token_overview
             unit_label = _token_unit_description(token_unit, language)
             lines.extend(
@@ -1924,7 +2028,7 @@ class TelegramBot:
                     "",
                 ]
             )
-        elif view_account == "__hosts__":
+        elif view_account == VIEW_HOSTS:
             if sync.get("default_session"):
                 lines.append(
                     _pick(language, "🎯 Default: ", "🎯 По умолчанию: ")
@@ -1959,7 +2063,7 @@ class TelegramBot:
                     f"{html.escape(str(label))}"
                 )
             lines.append("")
-        elif view_account == "__hosts_reset__":
+        elif view_account == VIEW_HOSTS_RESET:
             lines.extend(
                 [
                     _pick(language, "Apply the default session to every host?", "Вернуть все хосты к сессии по умолчанию?"),
@@ -2124,7 +2228,7 @@ class TelegramBot:
                         f" · 🔀 {_pick(language, 'overrides', 'индивидуально')}: <b>{sync.get('override_count', 0)}</b>"
                     )
                     if len(accounts) > 1:
-                        assigned_hosts = _assigned_host_labels(sync)
+                        assigned_hosts = snapshot.host_assignments
                         assignments = [
                             (account, assigned_hosts.get(account["id"], []))
                             for account in accounts
@@ -2180,28 +2284,26 @@ class TelegramBot:
 
     @staticmethod
     def _menu_keyboard(
-        accounts: list[dict[str, Any]],
-        active: str | None,
+        snapshot: WorkspaceSnapshot,
         pending: PendingReset | None,
         pending_delete: PendingDelete | None,
         pending_login: PendingLogin | None,
         login_choice: bool,
         import_prompt: bool,
         view_account: str | None,
-        sync: dict[str, Any],
         language: str,
-        space: str,
     ) -> list[list[dict[str, str]]]:
-        effective_active = active
-        if sync.get("enabled") and sync.get("total") == 1 and sync.get("targets"):
-            effective_active = sync["targets"][0].get("account_id")
-        if view_account == "__language__":
+        accounts = list(snapshot.accounts)
+        sync = snapshot.sync
+        space = snapshot.workspace.value
+        effective_active = snapshot.effective_account
+        if view_account == VIEW_LANGUAGE:
             return [
                 [{"text": ("✓ " if language == "en" else "") + "English", "callback_data": "language:en"}],
                 [{"text": ("✓ " if language == "ru" else "") + "Русский", "callback_data": "language:ru"}],
                 [{"text": _pick(language, "← Back", "← Назад"), "callback_data": "back"}],
             ]
-        if view_account == "__system__":
+        if view_account == VIEW_SYSTEM:
             actions = [
                 {
                     "text": _pick(language, "↻ Refresh", "↻ Обновить"),
@@ -2225,7 +2327,7 @@ class TelegramBot:
                     }
                 ],
             ]
-        if view_account == "__tokens__":
+        if view_account == VIEW_TOKENS:
             return [
                 [
                     {
@@ -2240,7 +2342,7 @@ class TelegramBot:
                     }
                 ],
             ]
-        if view_account == "__hosts__":
+        if view_account == VIEW_HOSTS:
             keyboard: list[list[dict[str, str]]] = []
             for target in sync["targets"]:
                 icon = {
@@ -2272,7 +2374,7 @@ class TelegramBot:
                 )
             keyboard.append([{"text": _pick(language, "← All sessions", "← Все сессии"), "callback_data": "back"}])
             return keyboard
-        if view_account == "__hosts_reset__":
+        if view_account == VIEW_HOSTS_RESET:
             return [
                 [
                     {
@@ -2282,8 +2384,8 @@ class TelegramBot:
                     {"text": _pick(language, "Cancel", "Отмена"), "callback_data": "hosts"},
                 ]
             ]
-        if isinstance(view_account, str) and view_account.startswith("__host__:"):
-            target_name = view_account.removeprefix("__host__:")
+        if isinstance(view_account, str) and view_account.startswith(HOST_VIEW_PREFIX):
+            target_name = view_account.removeprefix(HOST_VIEW_PREFIX)
             target = next(
                 target for target in sync["targets"] if target["name"] == target_name
             )
@@ -2316,8 +2418,8 @@ class TelegramBot:
                 )
             keyboard.append([{"text": _pick(language, "← Hosts", "← Хосты"), "callback_data": "hosts"}])
             return keyboard
-        if isinstance(view_account, str) and view_account.startswith("__export__:"):
-            account_id = view_account.removeprefix("__export__:")
+        if isinstance(view_account, str) and view_account.startswith(EXPORT_VIEW_PREFIX):
+            account_id = view_account.removeprefix(EXPORT_VIEW_PREFIX)
             return [
                 [
                     {

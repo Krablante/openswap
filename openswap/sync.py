@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -22,14 +23,35 @@ class SyncError(Exception):
         self.status = status
 
 
+class Workspace(str, Enum):
+    OPENCODE = "opencode"
+    CODEX = "codex"
+
+    @classmethod
+    def parse(cls, value: str | Workspace) -> Workspace:
+        if isinstance(value, cls):
+            return value
+        try:
+            return cls(value)
+        except ValueError as exc:
+            raise ValueError(f"unsupported workspace: {value}") from exc
+
+    def target_key(self, host: str) -> str:
+        return host if self is Workspace.OPENCODE else f"{host}.codex"
+
+
 @dataclass(frozen=True)
 class SyncTarget:
-    name: str
+    host: str
+    workspace: Workspace
     path: Path | str
     ssh: str | None = None
     python: str = "python3"
-    kind: str = "opencode"
-    label: str | None = None
+
+    @property
+    def key(self) -> str:
+        """Stable schema-3 key used by persisted routing and sync state."""
+        return self.workspace.target_key(self.host)
 
 
 @dataclass(frozen=True)
@@ -51,7 +73,7 @@ def read_target(config: SyncConfig, target: SyncTarget) -> TargetSnapshot:
     for attempt in range(2):
         raw = _read_target_bytes(config, target)
         if len(raw) > MAX_AUTH_BYTES:
-            raise SyncError(f"auth document on {target.name} exceeds 1 MiB")
+            raise SyncError(f"auth document on {target.key} exceeds 1 MiB")
         if not raw:
             document = {}
             break
@@ -61,11 +83,11 @@ def read_target(config: SyncConfig, target: SyncTarget) -> TargetSnapshot:
             if attempt == 0:
                 continue
             raise SyncError(
-                f"auth document on {target.name} is temporarily malformed",
+                f"auth document on {target.key} is temporarily malformed",
                 status="pending",
             ) from exc
         if not isinstance(document, dict):
-            raise SyncError(f"auth document on {target.name} must be an object")
+            raise SyncError(f"auth document on {target.key} must be an object")
         break
     return TargetSnapshot(
         target=target,
@@ -77,24 +99,13 @@ def read_target(config: SyncConfig, target: SyncTarget) -> TargetSnapshot:
 def write_target(
     config: SyncConfig,
     snapshot: TargetSnapshot,
-    credentials: dict[str, Any],
+    document: dict[str, Any],
 ) -> str:
-    document = dict(snapshot.document)
-    if snapshot.target.kind == "opencode":
-        document["openai"] = credentials
-    elif snapshot.target.kind == "codex":
-        required = ("auth_mode", "OPENAI_API_KEY", "tokens", "last_refresh")
-        if any(name not in credentials for name in required):
-            raise SyncError(
-                f"Codex credentials for {snapshot.target.name} are incomplete"
-            )
-        for name in required:
-            document[name] = credentials[name]
-    else:
-        raise SyncError(f"unsupported target kind: {snapshot.target.kind}")
     payload = (json.dumps(document, ensure_ascii=False, indent=2) + "\n").encode()
     if len(payload) > MAX_AUTH_BYTES:
-        raise SyncError(f"merged auth document for {snapshot.target.name} exceeds 1 MiB")
+        raise SyncError(
+            f"merged auth document for {snapshot.target.key} exceeds 1 MiB"
+        )
     if snapshot.target.ssh is None:
         _write_local(snapshot.target.path, snapshot.digest, payload)
     else:
@@ -109,7 +120,7 @@ def _read_target_bytes(config: SyncConfig, target: SyncTarget) -> bytes:
         except FileNotFoundError:
             return b""
         except OSError as exc:
-            raise SyncError(f"cannot read local target {target.name}: {exc}") from exc
+            raise SyncError(f"cannot read local target {target.key}: {exc}") from exc
     script = (
         "import pathlib,sys\n"
         f"path = pathlib.Path({str(target.path)!r}).expanduser()\n"
@@ -221,17 +232,17 @@ def _ssh_python(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SyncError(
-            f"SSH target {target.name} is unavailable: {exc}", status="offline"
+            f"SSH target {target.key} is unavailable: {exc}", status="offline"
         ) from exc
     if result.returncode == 75:
         raise SyncError(
-            f"auth document on {target.name} changed during synchronization",
+            f"auth document on {target.key} changed during synchronization",
             status="pending",
         )
     if result.returncode != 0:
         reason = "unavailable" if result.returncode == 255 else "failed"
         raise SyncError(
-            f"SSH target {target.name} {reason}",
+            f"SSH target {target.key} {reason}",
             status="offline" if result.returncode == 255 else "error",
         )
     return result
