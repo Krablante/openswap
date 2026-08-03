@@ -565,13 +565,9 @@ class OpenSwap:
         with self.locked():
             registry = self._load_registry()
             self._reconcile_locked(registry)
-            account_uuid, _ = self._resolve_account(registry, selector)
-            snapshot = self._inspect_slot(
-                account_uuid, refresh=True, include_limits=True
-            )
-            token = self._read_slot_entry(account_uuid)
-            self._update_account(registry, account_uuid, token, snapshot)
-            registry["accounts"][account_uuid]["limits_refresh_source"] = "manual"
+            account_uuid, account = self._resolve_account(registry, selector)
+            if account.get("last_error") == "login required":
+                raise DeadSessionError("login required")
             registry["defaults"][space] = account_uuid
             target_names = self._space_target_names(space)
             if all_targets:

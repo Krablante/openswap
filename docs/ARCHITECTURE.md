@@ -244,6 +244,12 @@ Local publication for both target kinds performs:
 7. directory `fsync` where the operating system supports it;
 8. post-write account verification.
 
+Applying `Make default` or `Use on this host` performs no OAuth, allowance, or
+token-activity network request. The canonical slot is already the source of
+truth: OpenSwap converts it to the selected target shape and publishes it
+locally before scheduling any remote reconciliation. Credential and usage
+refresh remain separate actions.
+
 Windows sharing violations receive a fixed bounded retry. There is no unbounded
 sleep or retry worker. A successful local route change and its `synced` state
 are committed in the same registry transaction.

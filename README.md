@@ -185,7 +185,7 @@ remaining allowance, or host-level attribution.
 The System screen reports:
 
 ```text
-OpenSwap 2.4.0
+OpenSwap 2.4.1
 
 ✓ 🔐 Codex CLI · ready
 ✓ 🤖 Codex · codex-cli 0.x.x
